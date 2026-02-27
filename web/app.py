@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -960,6 +961,74 @@ def config_license_query() -> Response:
         "port": port_val,
     })
     return jsonify(result)
+
+
+# --- Profile 管理 ---
+
+PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
+PROFILES_DIR.mkdir(exist_ok=True)
+
+def _sanitize_profile_name(name: str) -> str:
+    return re.sub(r'[^\w\-]', '_', name)
+
+@app.route("/profile_editor")
+@login_required
+def profile_editor():
+    return render_template("profile_editor.html")
+
+@app.route("/api/profiles", methods=["GET"])
+@login_required
+def api_profiles_list():
+    profiles = []
+    for f in sorted(PROFILES_DIR.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            profiles.append({
+                "name": f.stem,
+                "displayName": data.get("name", f.stem)
+            })
+        except Exception:
+            pass
+    return jsonify(profiles)
+
+@app.route("/api/profiles/<name>", methods=["GET"])
+@login_required
+def api_profile_get(name):
+    safe = _sanitize_profile_name(name)
+    if not safe:
+        abort(400)
+    path = PROFILES_DIR / f"{safe}.json"
+    if not path.exists():
+        abort(404)
+    return Response(path.read_bytes(), mimetype="application/json")
+
+@app.route("/api/profiles/<name>", methods=["POST"])
+@login_required
+def api_profile_save(name):
+    safe = _sanitize_profile_name(name)
+    if not safe:
+        abort(400)
+    try:
+        data = request.get_json(force=True)
+        if data is None:
+            abort(400)
+    except Exception:
+        abort(400)
+    path = PROFILES_DIR / f"{safe}.json"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return jsonify({"status": "saved", "name": safe})
+
+@app.route("/api/profiles/<name>", methods=["DELETE"])
+@login_required
+def api_profile_delete(name):
+    safe = _sanitize_profile_name(name)
+    if not safe:
+        abort(400)
+    path = PROFILES_DIR / f"{safe}.json"
+    if not path.exists():
+        abort(404)
+    path.unlink()
+    return jsonify({"status": "deleted"})
 
 
 if __name__ == "__main__":

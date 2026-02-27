@@ -1,0 +1,1453 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Profile Editor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <style>
+    body { background: #f8f9fa; }
+    #canvas-wrapper {
+      position: relative;
+      display: block;
+      overflow: hidden;
+      border: 2px dashed #adb5bd;
+      min-width: 300px;
+      min-height: 400px;
+      background: #e9ecef;
+      user-select: none;
+    }
+    #canvas-wrapper.has-image  { border-color: #0d6efd; }
+    #canvas-wrapper.tool-pencil { cursor: crosshair; }
+    #canvas-wrapper.tool-edit   { cursor: default; }
+    #canvas-wrapper.tool-move   { cursor: move; }
+    #canvas-wrapper.tool-eraser { cursor: cell; }
+    #canvas-wrapper.panning     { cursor: grabbing !important; }
+    #canvas-content {
+      display: inline-block;
+      line-height: 0;
+      transform-origin: 0 0;
+    }
+    #bg-img {
+      display: block;
+      max-width: none;
+      user-select: none;
+    }
+    #sensor-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    #canvas-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6c757d;
+      font-size: 0.9rem;
+      pointer-events: none;
+      padding: 1rem;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .sidebar { min-width: 260px; max-width: 300px; }
+    .sensor-row.selected { background-color: #cfe2ff; }
+    .btn-tool.active        { box-shadow: 0 0 0 3px rgba(13,110,253,0.35); }
+    #btn-tool-edit.active   { box-shadow: 0 0 0 3px rgba(25,135,84,0.35); }
+    #btn-tool-eraser.active { box-shadow: 0 0 0 3px rgba(220,53,69,0.35); }
+    #btn-tool-move.active   { box-shadow: 0 0 0 3px rgba(13,202,240,0.35); }
+    #btn-pan-mode.active    { background-color: #6c757d; color: #fff; border-color: #6c757d; }
+    /* Monitor panel */
+    .monitor-bar-bg { height: 8px; background: #e9ecef; border-radius: 4px; min-width: 50px; }
+    .monitor-bar    { height: 8px; background: #0d6efd; border-radius: 4px; transition: width 0.1s; }
+    .monitor-row    { cursor: pointer; transition: background 0.1s; }
+    .monitor-row:hover         { background: rgba(13,110,253,0.08); }
+    .monitor-row.monitor-spike { background: rgba(255,193,7,0.3); }
+    .monitor-row.monitor-assigned { outline: 2px solid #0d6efd; outline-offset: -2px; }
+  </style>
+</head>
+<body>
+<div class="container-fluid py-3">
+
+  <!-- 頂部工具欄 -->
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3 border-bottom pb-3">
+    <a href="/" class="btn btn-sm btn-outline-secondary">
+      <i class="fas fa-arrow-left"></i> <span data-i18n="back">返回 Dashboard</span>
+    </a>
+    <span class="fw-bold fs-5 me-2" data-i18n="title">Profile 編輯器</span>
+
+    <div class="input-group input-group-sm" style="max-width:220px;">
+      <span class="input-group-text" data-i18n="label.name">名稱</span>
+      <input type="text" id="profile-name" class="form-control" placeholder="my_profile">
+    </div>
+
+    <button class="btn btn-sm btn-primary" id="btn-save-server">
+      <i class="fas fa-cloud-upload-alt"></i> <span data-i18n="btn.save">保存到服務器</span>
+    </button>
+    <button class="btn btn-sm btn-outline-success" id="btn-export">
+      <i class="fas fa-download"></i> <span data-i18n="btn.export">導出 JSON</span>
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" id="btn-import-file">
+      <i class="fas fa-folder-open"></i> <span data-i18n="btn.import">導入 JSON</span>
+    </button>
+    <input type="file" id="import-file-input" accept=".json" class="d-none">
+
+    <!-- 從服務器載入 -->
+    <div class="input-group input-group-sm" style="max-width:280px;">
+      <select id="server-profile-select" class="form-select"></select>
+      <button class="btn btn-outline-secondary" id="btn-load-server">
+        <span data-i18n="btn.load">載入</span>
+      </button>
+      <button class="btn btn-outline-danger" id="btn-delete-server">
+        <i class="fas fa-trash"></i>
+      </button>
+    </div>
+
+    <div id="save-status" class="small text-muted ms-1"></div>
+  </div>
+
+  <div class="d-flex gap-3 align-items-start">
+
+    <!-- 左側邊欄 -->
+    <div class="sidebar flex-shrink-0">
+
+      <!-- 底圖設置 -->
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h6 class="card-title" data-i18n="section.bg">底圖設置</h6>
+          <button class="btn btn-sm btn-outline-primary w-100 mb-2" id="btn-upload-image">
+            <i class="fas fa-image"></i> <span data-i18n="btn.upload_bg">上傳底圖</span>
+          </button>
+          <input type="file" id="image-input" accept="image/*" class="d-none">
+          <div class="small text-muted" id="image-info" data-i18n="bg.none">未上傳</div>
+        </div>
+      </div>
+
+      <!-- 工具 -->
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h6 class="card-title" data-i18n="section.tools">工具</h6>
+          <div class="btn-group btn-group-sm w-100 mb-2">
+            <button class="btn btn-outline-primary btn-tool active" id="btn-tool-pencil">
+              ✏️ <span data-i18n="tool.pencil">鉛筆</span>
+            </button>
+            <button class="btn btn-outline-success btn-tool" id="btn-tool-edit">
+              ✎ <span data-i18n="tool.edit">編輯</span>
+            </button>
+            <button class="btn btn-outline-info btn-tool" id="btn-tool-move">
+              ✥ <span data-i18n="tool.move">移動</span>
+            </button>
+            <button class="btn btn-outline-danger btn-tool" id="btn-tool-eraser">
+              🩹 <span data-i18n="tool.eraser">橡皮擦</span>
+            </button>
+          </div>
+          <!-- 縮放 / 平移按鈕 -->
+          <div class="d-flex gap-1 flex-wrap mb-2">
+            <button class="btn btn-outline-secondary btn-sm" id="btn-zoom-in"  title="放大">＋</button>
+            <button class="btn btn-outline-secondary btn-sm" id="btn-zoom-out" title="縮小">－</button>
+            <button class="btn btn-outline-secondary btn-sm" id="btn-zoom-fit" data-i18n="zoom.fit">適應</button>
+            <button class="btn btn-outline-secondary btn-sm" id="btn-pan-mode" data-i18n="tool.pan">✋ 平移</button>
+          </div>
+          <div class="small text-muted mb-2" id="tool-hint"></div>
+          <button class="btn btn-sm btn-outline-warning w-100" id="btn-clear-all">
+            <span data-i18n="btn.clear">清除所有傳感器</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 設備即時監視 -->
+      <div class="card shadow-sm mb-3">
+        <div class="card-body p-2">
+          <h6 class="card-title mb-2 px-1 d-flex align-items-center gap-1">
+            <span data-i18n="monitor.title">即時通道監視</span>
+          </h6>
+          <div class="d-flex gap-1 align-items-center mb-2">
+            <select id="device-select" class="form-select form-select-sm flex-grow-1">
+              <option value=""></option>
+            </select>
+            <button class="btn btn-sm btn-outline-primary" id="btn-connect"></button>
+          </div>
+          <div class="small mb-2" id="monitor-status">
+            <span id="monitor-status-dot" class="me-1">○</span>
+            <span id="monitor-status-text"></span>
+          </div>
+          <div class="small text-muted mb-2" id="monitor-hint" style="display:none;"
+               data-i18n="monitor.hint"></div>
+          <div id="monitor-panel" style="max-height:250px; overflow-y:auto; display:none;">
+            <table class="table table-sm table-borderless mb-0">
+              <thead class="table-light sticky-top" style="font-size:0.7rem;">
+                <tr>
+                  <th style="width:28px;" data-i18n="monitor.ch">ch</th>
+                  <th data-i18n="monitor.level">強度</th>
+                  <th style="width:44px;" data-i18n="monitor.value">值</th>
+                  <th style="width:36px;"></th>
+                </tr>
+              </thead>
+              <tbody id="monitor-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 傳感器列表 -->
+      <div class="card shadow-sm">
+        <div class="card-body p-2">
+          <h6 class="card-title mb-2 px-1">
+            <span data-i18n="section.sensors">傳感器列表</span>
+            <span class="badge bg-secondary ms-1" id="sensor-count-badge">0</span>
+          </h6>
+          <div style="max-height:280px; overflow-y:auto;">
+            <table class="table table-sm table-hover mb-0">
+              <thead class="table-light sticky-top">
+                <tr>
+                  <th style="width:26px">#</th>
+                  <th data-i18n="col.label">標籤</th>
+                  <th data-i18n="col.ch_idx">通道</th>
+                  <th data-i18n="col.pos">位置</th>
+                  <th style="width:26px">✓</th>
+                </tr>
+              </thead>
+              <tbody id="sensor-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /sidebar -->
+
+    <!-- 主畫布區域 -->
+    <div class="flex-grow-1">
+      <div id="canvas-wrapper" class="tool-pencil">
+        <div id="canvas-placeholder"><span data-i18n="placeholder">請上傳底圖，然後用鉛筆工具點擊放置傳感器</span></div>
+        <div id="canvas-content">
+          <img id="bg-img" src="" alt="" style="display:none;">
+          <canvas id="sensor-canvas"></canvas>
+        </div>
+      </div>
+      <div class="mt-2 small text-muted d-flex gap-3">
+        <span id="cursor-pos"></span>
+        <span id="zoom-info" class="text-muted"></span>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /container-fluid -->
+
+<!-- 浮動編輯面板 -->
+<div id="floating-panel" style="display:none;position:fixed;z-index:3000;
+    background:#fff;border:1px solid #dee2e6;border-radius:8px;
+    box-shadow:0 4px 16px rgba(0,0,0,0.18);padding:10px;
+    min-width:190px;max-width:230px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <small style="font-weight:600;" id="fp-title">P0</small>
+    <button id="fp-close" class="btn-close" style="font-size:0.6rem;"></button>
+  </div>
+  <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;">
+    <input type="text" id="fp-label" class="form-control form-control-sm" style="width:68px;" placeholder="Label">
+    <input type="number" id="fp-index" class="form-control form-control-sm" min="0" style="width:55px;" placeholder="ch">
+    <div class="form-check m-0">
+      <input type="checkbox" id="fp-enabled" class="form-check-input" title="Enabled">
+    </div>
+  </div>
+  <div id="fp-monitor" style="display:none;border-top:1px solid #f0f0f0;padding-top:6px;">
+    <div style="font-size:0.65rem;color:#888;margin-bottom:3px;" data-i18n="fp.hint"></div>
+    <div id="fp-ch-list" style="max-height:140px;overflow-y:auto;"></div>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+    <button id="fp-delete" class="btn btn-sm btn-outline-danger"
+            style="font-size:0.7rem;padding:2px 8px;" data-i18n="fp.delete">刪除</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ============================================================
+  // i18n
+  // ============================================================
+  const TRANSLATIONS = {
+    zh: {
+      'page.title':              'Profile 编辑器',
+      'back':                    '返回 Dashboard',
+      'title':                   'Profile 编辑器',
+      'label.name':              '名称',
+      'btn.save':                '保存到服务器',
+      'btn.export':              '导出 JSON',
+      'btn.import':              '导入 JSON',
+      'server.placeholder':      '-- 从服务器载入 --',
+      'btn.load':                '载入',
+      'section.bg':              '底图设置',
+      'btn.upload_bg':           '上传底图',
+      'bg.none':                 '未上传',
+      'section.tools':           '工具',
+      'tool.pencil':             '铅笔',
+      'tool.edit':               '编辑',
+      'tool.eraser':             '橡皮擦',
+      'tool.move':               '移动',
+      'hint.pencil':             '点击空白处新增传感器；拖拽已有标记可移动位置',
+      'hint.edit':               '点击传感器进行编辑；空白区域拖拽可平移底图',
+      'hint.eraser':             '点击传感器标记将其删除',
+      'hint.move':               '拖拽传感器可移动位置；点击空白无效',
+      'btn.clear':               '清除所有传感器',
+      'section.display':         '显示设置',
+      'display.mode_label':      '预览模式',
+      'display.2d':              '2D 色彩',
+      'display.3d':              '3D 立体',
+      'display.p_min':           '压力 Min',
+      'display.p_max':           '压力 Max',
+      'section.sensors':         '传感器列表',
+      'col.label':               '标签',
+      'col.ch_idx':              '通道',
+      'col.pos':                 '位置',
+      'placeholder':             '请上传底图，然后用铅笔工具点击放置传感器',
+      'cursor.prefix':           '游标：',
+      'cursor.away':             '--',
+      'confirm.clear':           '清除所有传感器？',
+      'confirm.delete':          '确认删除 Profile "{name}"？',
+      'alert.name_required':     '请输入 Profile 名称',
+      'alert.json_error':        'JSON 格式错误',
+      'alert.load_failed':       '载入失败：',
+      'alert.delete_failed':     '删除失败：',
+      'status.saving':           '保存中...',
+      'status.saved':            '✓ 已保存',
+      'status.save_failed':      '✗ 保存失败：',
+      'status.loaded':           '已载入 "{name}"',
+      'status.deleted':          '已删除 "{name}"',
+      'monitor.title':           '即时通道监视',
+      'monitor.device_placeholder': '-- 选择设备 --',
+      'monitor.connect':         '连接',
+      'monitor.disconnect':      '断开',
+      'monitor.connected':       '已连接',
+      'monitor.disconnected':    '未连接',
+      'monitor.error':           '连接错误',
+      'monitor.sensors':         '个感测器',
+      'monitor.assign':          '分配',
+      'monitor.noSelection':     '请先在画布上点选一个传感器',
+      'monitor.hint':            '选中传感器 → 按压实体感测器 → 点击对应行完成通道分配',
+      'monitor.ch':              'ch',
+      'monitor.level':           '强度',
+      'monitor.value':           '值',
+      'monitor.loading':         '等待数据…',
+      'fp.hint':                 '点选通道完成分配',
+      'fp.delete':               '刪除',
+      'zoom.label':              '缩放：',
+      'zoom.fit':                '适应',
+      'tool.pan':                '平移',
+      'hint.pan':                '平移模式：拖拽移动视图',
+    },
+    ja: {
+      'page.title':              'Profile エディタ',
+      'back':                    'ダッシュボードに戻る',
+      'title':                   'Profile エディタ',
+      'label.name':              '名前',
+      'btn.save':                'サーバーに保存',
+      'btn.export':              'JSON エクスポート',
+      'btn.import':              'JSON インポート',
+      'server.placeholder':      '-- サーバーから読み込む --',
+      'btn.load':                '読み込む',
+      'section.bg':              '背景画像',
+      'btn.upload_bg':           '画像をアップロード',
+      'bg.none':                 '未アップロード',
+      'section.tools':           'ツール',
+      'tool.pencil':             '鉛筆',
+      'tool.edit':               '編集',
+      'tool.eraser':             '消しゴム',
+      'tool.move':               '移動',
+      'hint.pencil':             '空白をクリックしてセンサーを追加；ドラッグで移動',
+      'hint.edit':               'センサーをクリックして編集；空白領域をドラッグでパン',
+      'hint.eraser':             'センサーマーカーをクリックして削除',
+      'hint.move':               'センサーをドラッグして移動；空白クリックは無効',
+      'btn.clear':               'すべてのセンサーを削除',
+      'section.display':         '表示設定',
+      'display.mode_label':      'プレビューモード',
+      'display.2d':              '2D カラー',
+      'display.3d':              '3D 立体',
+      'display.p_min':           '圧力 Min',
+      'display.p_max':           '圧力 Max',
+      'section.sensors':         'センサー一覧',
+      'col.label':               'ラベル',
+      'col.ch_idx':              'チャンネル',
+      'col.pos':                 '位置',
+      'placeholder':             '画像をアップロードし、鉛筆ツールでクリックしてセンサーを配置してください',
+      'cursor.prefix':           'カーソル：',
+      'cursor.away':             '--',
+      'confirm.clear':           'すべてのセンサーを削除しますか？',
+      'confirm.delete':          'Profile "{name}" を削除しますか？',
+      'alert.name_required':     'Profile 名を入力してください',
+      'alert.json_error':        'JSON 形式エラー',
+      'alert.load_failed':       '読み込み失敗：',
+      'alert.delete_failed':     '削除失敗：',
+      'status.saving':           '保存中...',
+      'status.saved':            '✓ 保存しました',
+      'status.save_failed':      '✗ 保存失敗：',
+      'status.loaded':           '"{name}" を読み込みました',
+      'status.deleted':          '"{name}" を削除しました',
+      'monitor.title':           'リアルタイムチャンネル監視',
+      'monitor.device_placeholder': '-- デバイスを選択 --',
+      'monitor.connect':         '接続',
+      'monitor.disconnect':      '切断',
+      'monitor.connected':       '接続済み',
+      'monitor.disconnected':    '未接続',
+      'monitor.error':           '接続エラー',
+      'monitor.sensors':         '個のセンサー',
+      'monitor.assign':          '割当',
+      'monitor.noSelection':     'まずキャンバスでセンサーを選択してください',
+      'monitor.hint':            'センサーを選択 → 物理センサーを押す → 対応行をクリックして割り当て',
+      'monitor.ch':              'ch',
+      'monitor.level':           '強度',
+      'monitor.value':           '値',
+      'monitor.loading':         'データ待機中…',
+      'fp.hint':                 'チャンネルをクリックして割り当て',
+      'fp.delete':               '削除',
+      'zoom.label':              'ズーム：',
+      'zoom.fit':                'フィット',
+      'tool.pan':                'パン',
+      'hint.pan':                'パンモード：ドラッグで移動',
+    },
+    en: {
+      'page.title':              'Profile Editor',
+      'back':                    'Back to Dashboard',
+      'title':                   'Profile Editor',
+      'label.name':              'Name',
+      'btn.save':                'Save to Server',
+      'btn.export':              'Export JSON',
+      'btn.import':              'Import JSON',
+      'server.placeholder':      '-- Load from Server --',
+      'btn.load':                'Load',
+      'section.bg':              'Background Image',
+      'btn.upload_bg':           'Upload Image',
+      'bg.none':                 'Not uploaded',
+      'section.tools':           'Tools',
+      'tool.pencil':             'Pencil',
+      'tool.edit':               'Edit',
+      'tool.eraser':             'Eraser',
+      'tool.move':               'Move',
+      'hint.pencil':             'Click blank area to add sensor; drag existing marker to move',
+      'hint.edit':               'Click sensor to edit; drag blank area to pan image',
+      'hint.eraser':             'Click a sensor marker to delete it',
+      'hint.move':               'Drag sensor to move; click blank does nothing',
+      'btn.clear':               'Clear All Sensors',
+      'section.display':         'Display Settings',
+      'display.mode_label':      'Preview Mode',
+      'display.2d':              '2D Color',
+      'display.3d':              '3D Solid',
+      'display.p_min':           'Pressure Min',
+      'display.p_max':           'Pressure Max',
+      'section.sensors':         'Sensor List',
+      'col.label':               'Label',
+      'col.ch_idx':              'Channel',
+      'col.pos':                 'Position',
+      'placeholder':             'Upload an image, then use the pencil tool to place sensors',
+      'cursor.prefix':           'Cursor: ',
+      'cursor.away':             '--',
+      'confirm.clear':           'Clear all sensors?',
+      'confirm.delete':          'Delete Profile "{name}"?',
+      'alert.name_required':     'Please enter a Profile name',
+      'alert.json_error':        'JSON format error',
+      'alert.load_failed':       'Load failed: ',
+      'alert.delete_failed':     'Delete failed: ',
+      'status.saving':           'Saving...',
+      'status.saved':            '✓ Saved',
+      'status.save_failed':      '✗ Save failed: ',
+      'status.loaded':           'Loaded "{name}"',
+      'status.deleted':          'Deleted "{name}"',
+      'monitor.title':           'Live Channel Monitor',
+      'monitor.device_placeholder': '-- Select Device --',
+      'monitor.connect':         'Connect',
+      'monitor.disconnect':      'Disconnect',
+      'monitor.connected':       'Connected',
+      'monitor.disconnected':    'Disconnected',
+      'monitor.error':           'Connection Error',
+      'monitor.sensors':         'sensors',
+      'monitor.assign':          'Assign',
+      'monitor.noSelection':     'Select a sensor on canvas first',
+      'monitor.hint':            'Select a sensor → press physical sensor → click row to assign channel',
+      'monitor.ch':              'ch',
+      'monitor.level':           'Level',
+      'monitor.value':           'Value',
+      'monitor.loading':         'Waiting for data…',
+      'fp.hint':                 'Click channel to assign',
+      'fp.delete':               'Delete',
+      'zoom.label':              'Zoom: ',
+      'zoom.fit':                'Fit',
+      'tool.pan':                'Pan',
+      'hint.pan':                'Pan mode: drag to move view',
+    }
+  };
+
+  let currentLang = localStorage.getItem('uiLanguage') || 'ja';
+  if (!TRANSLATIONS[currentLang]) currentLang = 'ja';
+
+  function t(key, vars) {
+    const pack = TRANSLATIONS[currentLang] || TRANSLATIONS.ja;
+    let str = pack[key] || TRANSLATIONS.ja[key] || key;
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) str = str.replace(`{${k}}`, v);
+    }
+    return str;
+  }
+
+  function applyEditorLanguage() {
+    document.title = t('page.title');
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.dataset.i18n;
+      if (key) el.textContent = t(key);
+    });
+    const sel = document.getElementById('server-profile-select');
+    const firstOpt = sel && sel.querySelector('option[value=""]');
+    if (firstOpt) firstOpt.textContent = t('server.placeholder');
+    const dsel = document.getElementById('device-select');
+    const dFirstOpt = dsel && dsel.querySelector('option[value=""]');
+    if (dFirstOpt) dFirstOpt.textContent = t('monitor.device_placeholder');
+    updateMonitorStatus(monitorConnected ? 'connected' : (liveSource ? 'connecting' : 'disconnected'));
+    if (monitorConnected && liveSensorCount > 0) buildMonitorTable();
+    updateToolHint();
+    cursorPos.textContent = t('cursor.prefix') + t('cursor.away');
+  }
+
+  // ============================================================
+  // DOM refs
+  // ============================================================
+  const canvasWrapper    = document.getElementById('canvas-wrapper');
+  const canvasContent    = document.getElementById('canvas-content');
+  const bgImg            = document.getElementById('bg-img');
+  const sensorCanvas     = document.getElementById('sensor-canvas');
+  const ctx2d            = sensorCanvas.getContext('2d');
+  const sensorTbody      = document.getElementById('sensor-tbody');
+  const sensorCountBadge = document.getElementById('sensor-count-badge');
+  const cursorPos        = document.getElementById('cursor-pos');
+  const zoomInfo         = document.getElementById('zoom-info');
+  const toolHint         = document.getElementById('tool-hint');
+  const saveStatus       = document.getElementById('save-status');
+  const canvasPlaceholder = document.getElementById('canvas-placeholder');
+
+  // ============================================================
+  // State
+  // ============================================================
+  let sensors      = [];       // [{id, index, x, y, label, enabled}]
+  let nextId       = 1;
+  let selectedId   = -1;
+  let dragId       = -1;
+  let currentTool  = 'pencil';
+  let bgAspectRatio = 1;
+  let hasImage     = false;
+
+  // Pan / Zoom
+  let zoom       = 1;
+  let panX       = 0;
+  let panY       = 0;
+  let isPanning  = false;
+  let panStart   = { x: 0, y: 0, panX: 0, panY: 0 };
+  let panMode    = false;  // 平移模式（由按鈕切換）
+
+  // Floating panel
+  let fpSensorId = -1;
+
+  // ============================================================
+  // Pan / Zoom helpers
+  // ============================================================
+  function applyCanvasTransform() {
+    canvasContent.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+    zoomInfo.textContent = `${t('zoom.label')}${Math.round(zoom * 100)}%`;
+  }
+
+  // ============================================================
+  // Tool
+  // ============================================================
+  function setTool(tool) {
+    dragId = -1;        // 切換工具時釋放任何附著的傳感器
+    currentTool = tool;
+    setPanMode(false);  // 切換工具時關閉平移模式
+    canvasWrapper.classList.remove('tool-pencil', 'tool-edit', 'tool-move', 'tool-eraser');
+    canvasWrapper.classList.add(`tool-${tool}`);
+    ['pencil', 'edit', 'move', 'eraser'].forEach(name => {
+      const btn = document.getElementById(`btn-tool-${name}`);
+      if (btn) btn.classList.toggle('active', name === tool);
+    });
+    if (tool !== 'edit') closeFloatingPanel();
+    updateToolHint();
+  }
+
+  function updateToolHint() {
+    if (panMode) { toolHint.textContent = t('hint.pan'); return; }
+    const map = { pencil: 'hint.pencil', edit: 'hint.edit', move: 'hint.move', eraser: 'hint.eraser' };
+    toolHint.textContent = t(map[currentTool] || 'hint.pencil');
+  }
+
+  document.getElementById('btn-tool-pencil').addEventListener('click', () => setTool('pencil'));
+  document.getElementById('btn-tool-edit').addEventListener('click',   () => setTool('edit'));
+  document.getElementById('btn-tool-move').addEventListener('click',   () => setTool('move'));
+  document.getElementById('btn-tool-eraser').addEventListener('click', () => setTool('eraser'));
+
+  // ============================================================
+  // Gradient color
+  // ============================================================
+  const GRADIENT_STOPS = [
+    { stop: 0,    color: [46,  204, 113] },
+    { stop: 0.33, color: [241, 196,  15] },
+    { stop: 0.66, color: [243, 156,  18] },
+    { stop: 1,    color: [231,  76,  60] }
+  ];
+  function gradientColor(ratio) {
+    ratio = Math.max(0, Math.min(1, ratio));
+    for (let s = 1; s < GRADIENT_STOPS.length; s++) {
+      if (ratio <= GRADIENT_STOPS[s].stop) {
+        const prev = GRADIENT_STOPS[s-1], next = GRADIENT_STOPS[s];
+        const tl = (ratio - prev.stop) / (next.stop - prev.stop || 1);
+        return `rgb(${
+          Math.round(prev.color[0] + (next.color[0] - prev.color[0]) * tl)},${
+          Math.round(prev.color[1] + (next.color[1] - prev.color[1]) * tl)},${
+          Math.round(prev.color[2] + (next.color[2] - prev.color[2]) * tl)})`;
+      }
+    }
+    return 'rgb(231,76,60)';
+  }
+
+  // ============================================================
+  // Draw sensors（HiDPI + 縮小圓點）
+  // ============================================================
+  function drawSensors() {
+    const dpr      = window.devicePixelRatio || 1;
+    const displayW = bgImg.clientWidth  || canvasWrapper.clientWidth;
+    const displayH = bgImg.clientHeight || canvasWrapper.clientHeight;
+    sensorCanvas.width  = displayW * dpr;
+    sensorCanvas.height = displayH * dpr;
+    ctx2d.scale(dpr, dpr);
+    ctx2d.clearRect(0, 0, displayW, displayH);
+
+    // 圓點大小：以圖片短邊為基準的百分比，確保任何解析度下視覺大小一致
+    const shortSide = Math.min(displayW, displayH);
+    const rNormal   = Math.max(4, shortSide * 0.014);
+    const rSelected = Math.max(6, shortSide * 0.020);
+
+    sensors.forEach((s, i) => {
+      const px = s.x * displayW;
+      const py = s.y * displayH;
+      const isSelected = (s.id === selectedId);
+      const radius = isSelected ? rSelected : rNormal;
+      const ratio  = sensors.length > 1 ? i / (sensors.length - 1) : 0;
+      const color  = gradientColor(ratio);
+
+      ctx2d.beginPath();
+      ctx2d.arc(px, py, radius, 0, Math.PI * 2);
+      ctx2d.fillStyle   = color;
+      ctx2d.globalAlpha = s.enabled ? 0.85 : 0.35;
+      ctx2d.fill();
+      ctx2d.globalAlpha = 1;
+      ctx2d.strokeStyle = isSelected ? '#0d6efd' : '#fff';
+      ctx2d.lineWidth   = isSelected ? 2 : 1.5;
+      ctx2d.stroke();
+
+      ctx2d.fillStyle    = '#fff';
+      const fontSize = Math.max(8, Math.round(radius * 0.85));
+      ctx2d.font         = `bold ${fontSize}px sans-serif`;
+      ctx2d.textAlign    = 'center';
+      ctx2d.textBaseline = 'middle';
+      ctx2d.fillText(s.label, px, py);
+    });
+  }
+
+  // ============================================================
+  // Render sensor table
+  // ============================================================
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/"/g,'&quot;')
+      .replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderSensorTable() {
+    sensorCountBadge.textContent = sensors.length;
+    sensorTbody.innerHTML = '';
+
+    sensors.forEach(s => {
+      const tr = document.createElement('tr');
+      tr.className   = 'sensor-row' + (s.id === selectedId ? ' selected' : '');
+      tr.dataset.sid = s.id;
+      const posText  = `(${s.x.toFixed(3)}, ${s.y.toFixed(3)})`;
+      tr.innerHTML = `
+        <td><small>${s.id}</small></td>
+        <td><input class="form-control form-control-sm p-0 px-1" value="${escHtml(s.label)}"
+            data-field="label" data-sid="${s.id}" style="width:52px;font-size:0.75rem;"></td>
+        <td><input type="number" class="form-control form-control-sm p-0 px-1" value="${s.index}"
+            data-field="index" data-sid="${s.id}" style="width:50px;font-size:0.75rem;" min="0"></td>
+        <td><small class="text-muted">${posText}</small></td>
+        <td><input type="checkbox" class="form-check-input" data-field="enabled" data-sid="${s.id}"
+            ${s.enabled ? 'checked' : ''}></td>`;
+      sensorTbody.appendChild(tr);
+    });
+
+    sensorTbody.querySelectorAll('tr.sensor-row').forEach(tr => {
+      tr.addEventListener('click', e => {
+        if (e.target.tagName === 'INPUT') return;
+        const sid = parseInt(tr.dataset.sid);
+        selectedId = (selectedId === sid) ? -1 : sid;
+        renderSensorTable();
+        drawSensors();
+        if (monitorConnected) updateMonitorTable();
+      });
+    });
+
+    sensorTbody.querySelectorAll('input[data-field="label"]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const s = sensors.find(s => s.id === parseInt(inp.dataset.sid));
+        if (s) { s.label = inp.value; drawSensors(); }
+      });
+    });
+
+    sensorTbody.querySelectorAll('input[data-field="index"]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const s = sensors.find(s => s.id === parseInt(inp.dataset.sid));
+        if (s) { s.index = Math.max(0, parseInt(inp.value) || 0); }
+      });
+    });
+
+    sensorTbody.querySelectorAll('input[data-field="enabled"]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const s = sensors.find(s => s.id === parseInt(inp.dataset.sid));
+        if (s) { s.enabled = inp.checked; drawSensors(); }
+      });
+    });
+  }
+
+  // ============================================================
+  // Canvas helpers（zoom 感知）
+  // ============================================================
+  function getNormPos(e) {
+    // getBoundingClientRect 包含 CSS transform，rect.width = clientWidth * zoom
+    const rect = bgImg.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height))
+    };
+  }
+
+  function findNearSensor(nx, ny) {
+    const w = bgImg.clientWidth  || 600;
+    const h = bgImg.clientHeight || 400;
+    // 命中半徑同圓點百分比（短邊 2.5%），轉換為歸一化座標
+    const shortSide = Math.min(w, h);
+    const threshold = Math.max(0.012, (shortSide * 0.025) / w);
+    let best = null, bestDist = Infinity;
+    sensors.forEach(s => {
+      const d = Math.hypot(s.x - nx, s.y - ny);
+      if (d < threshold && d < bestDist) { bestDist = d; best = s; }
+    });
+    return best;
+  }
+
+  // ============================================================
+  // Canvas mouse / wheel events
+  // ============================================================
+  canvasWrapper.addEventListener('mousedown', e => {
+    const isMiddle  = e.button === 1;
+    const shouldPan = panMode || isMiddle;
+
+    // 無圖且非主動平移：忽略
+    if (!hasImage && !shouldPan) return;
+
+    if (shouldPan) {
+      isPanning = true;
+      panStart  = { x: e.clientX, y: e.clientY, panX, panY };
+      canvasWrapper.classList.add('panning');
+      e.preventDefault();
+      return;
+    }
+
+    // 以下邏輯保證 hasImage === true
+
+    const { x, y } = getNormPos(e);
+    const near = findNearSensor(x, y);
+
+    // 移動工具
+    if (currentTool === 'move') {
+      if (dragId >= 0) {
+        // 已附著 → 點擊任意位置放下
+        dragId = -1;
+        renderSensorTable();
+        drawSensors();
+      } else if (near) {
+        // 點擊傳感器 → 附著，隨滑鼠移動
+        dragId     = near.id;
+        selectedId = near.id;
+        closeFloatingPanel();
+        renderSensorTable();
+        drawSensors();
+      }
+      return;  // 空白區域不新增
+    }
+
+    // 橡皮擦
+    if (currentTool === 'eraser') {
+      if (near) {
+        sensors = sensors.filter(s => s.id !== near.id);
+        if (selectedId === near.id) selectedId = -1;
+        if (fpSensorId === near.id) closeFloatingPanel();
+        renderSensorTable();
+        drawSensors();
+      }
+      return;
+    }
+
+    // 編輯工具
+    if (currentTool === 'edit') {
+      closeFloatingPanel();
+      if (near) {
+        selectedId = near.id;
+        openFloatingPanel(near);
+      } else {
+        // 空白區域 → 平移
+        isPanning = true;
+        panStart  = { x: e.clientX, y: e.clientY, panX, panY };
+        canvasWrapper.classList.add('panning');
+      }
+      renderSensorTable();
+      drawSensors();
+      return;
+    }
+
+    // 鉛筆
+    if (near) {
+      dragId     = near.id;
+      selectedId = near.id;
+      closeFloatingPanel();
+      renderSensorTable();
+    } else {
+      // 新增傳感器（0 起始編號）
+      const idx = sensors.length;
+      const s = { id: nextId++, index: idx, x, y, label: `P${idx}`, enabled: true };
+      sensors.push(s);
+      selectedId = s.id;
+      renderSensorTable();
+      drawSensors();
+    }
+  });
+
+  canvasWrapper.addEventListener('mousemove', e => {
+    if (isPanning) {
+      panX = panStart.panX + (e.clientX - panStart.x);
+      panY = panStart.panY + (e.clientY - panStart.y);
+      applyCanvasTransform();
+      return;
+    }
+    if (!hasImage) { cursorPos.textContent = t('cursor.prefix') + t('cursor.away'); return; }
+    const { x, y } = getNormPos(e);
+    cursorPos.textContent = `${t('cursor.prefix')}(${x.toFixed(3)}, ${y.toFixed(3)})`;
+    if (dragId >= 0) {
+      const s = sensors.find(s => s.id === dragId);
+      if (s) { s.x = x; s.y = y; renderSensorTable(); drawSensors(); }
+    }
+  });
+
+  canvasWrapper.addEventListener('mouseleave', () => {
+    cursorPos.textContent = t('cursor.prefix') + t('cursor.away');
+  });
+
+  // mouseup on document so releasing outside wrapper ends panning
+  document.addEventListener('mouseup', () => {
+    isPanning = false;
+    // 移動工具：mouseup 不釋放附著的傳感器，需再次點擊才放下
+    if (currentTool !== 'move') dragId = -1;
+    canvasWrapper.classList.remove('panning');
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Escape') closeFloatingPanel();
+  });
+
+  window.addEventListener('resize', () => drawSensors());
+
+  // ============================================================
+  // Zoom / Pan button controls
+  // ============================================================
+  function zoomAt(cx, cy, factor) {
+    panX = cx - (cx - panX) * factor;
+    panY = cy - (cy - panY) * factor;
+    zoom = Math.max(0.2, Math.min(12, zoom * factor));
+    applyCanvasTransform();
+    closeFloatingPanel();
+  }
+
+  function getWrapperCenter() {
+    const r = canvasWrapper.getBoundingClientRect();
+    return { cx: r.width / 2, cy: r.height / 2 };
+  }
+
+  function setPanMode(on) {
+    panMode = on;
+    document.getElementById('btn-pan-mode').classList.toggle('active', on);
+    canvasWrapper.style.cursor = on ? 'grab' : '';
+    updateToolHint();
+  }
+
+  document.getElementById('btn-zoom-in').addEventListener('click', () => {
+    const { cx, cy } = getWrapperCenter();
+    zoomAt(cx, cy, 1.25);
+  });
+  document.getElementById('btn-zoom-out').addEventListener('click', () => {
+    const { cx, cy } = getWrapperCenter();
+    zoomAt(cx, cy, 1 / 1.25);
+  });
+  document.getElementById('btn-zoom-fit').addEventListener('click', () => {
+    zoom = 1; panX = 0; panY = 0;
+    applyCanvasTransform();
+    closeFloatingPanel();
+  });
+  document.getElementById('btn-pan-mode').addEventListener('click', () => {
+    setPanMode(!panMode);
+  });
+
+  // ============================================================
+  // Upload background image
+  // ============================================================
+  document.getElementById('btn-upload-image').addEventListener('click', () => {
+    document.getElementById('image-input').click();
+  });
+  document.getElementById('image-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      bgImg.src = ev.target.result;
+      bgImg.style.display = 'block';
+      hasImage = true;
+      canvasWrapper.classList.add('has-image');
+      canvasPlaceholder.style.display = 'none';
+      // 重置縮放以適應新圖片
+      zoom = 1; panX = 0; panY = 0;
+      bgImg.onload = () => {
+        bgAspectRatio = bgImg.naturalWidth / bgImg.naturalHeight;
+        document.getElementById('image-info').textContent =
+          `${file.name}  ${bgImg.naturalWidth}×${bgImg.naturalHeight}`;
+        applyCanvasTransform();
+        drawSensors();
+      };
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  });
+
+  // ============================================================
+  // Clear all sensors
+  // ============================================================
+  document.getElementById('btn-clear-all').addEventListener('click', () => {
+    if (!confirm(t('confirm.clear'))) return;
+    sensors    = [];
+    nextId     = 1;
+    selectedId = -1;
+    closeFloatingPanel();
+    renderSensorTable();
+    drawSensors();
+  });
+
+  // ============================================================
+  // Build profile JSON
+  // ============================================================
+  function buildProfile() {
+    const name = document.getElementById('profile-name').value.trim() || 'my_profile';
+    const mode = '2d';
+    const pMin = 300;
+    const pMax = 1000;
+    return {
+      version: 1,
+      name,
+      background: {
+        imageData:   hasImage ? bgImg.src : '',
+        aspectRatio: bgAspectRatio
+      },
+      sensors: sensors.map(s => ({
+        index:   s.index,
+        x:       s.x,
+        y:       s.y,
+        label:   s.label,
+        enabled: s.enabled
+      })),
+      display: { mode, pressureMin: pMin, pressureMax: pMax }
+    };
+  }
+
+  // ============================================================
+  // Load profile into editor
+  // ============================================================
+  function loadProfile(data) {
+    document.getElementById('profile-name').value = data.name || '';
+
+    if (data.background && data.background.imageData) {
+      bgImg.src = data.background.imageData;
+      bgImg.style.display = 'block';
+      hasImage = true;
+      bgAspectRatio = data.background.aspectRatio || 1;
+      canvasWrapper.classList.add('has-image');
+      canvasPlaceholder.style.display = 'none';
+      document.getElementById('image-info').textContent = `AR=${bgAspectRatio.toFixed(3)}`;
+    } else {
+      hasImage = false;
+      bgImg.src = '';
+      bgImg.style.display = 'none';
+      bgAspectRatio = 1;
+      canvasWrapper.classList.remove('has-image');
+      canvasPlaceholder.style.display = '';
+      document.getElementById('image-info').textContent = t('bg.none');
+    }
+
+    if (Array.isArray(data.sensors) && data.sensors.length > 0) {
+      sensors = data.sensors.map((s, i) => ({
+        id:      i + 1,
+        index:   typeof s.index === 'number' ? s.index : i,
+        x:       typeof s.x === 'number' ? s.x : 0.5,
+        y:       typeof s.y === 'number' ? s.y : 0.5,
+        label:   s.label || `P${i}`,
+        enabled: s.enabled !== false
+      }));
+      nextId = sensors.length + 1;
+    } else {
+      sensors = [];
+      nextId  = 1;
+    }
+
+    selectedId = -1;
+    closeFloatingPanel();
+    zoom = 1; panX = 0; panY = 0;
+    applyCanvasTransform();
+    renderSensorTable();
+    if (bgImg.complete && bgImg.naturalWidth > 0) {
+      drawSensors();
+    } else {
+      bgImg.onload = () => { bgAspectRatio = bgImg.naturalWidth / bgImg.naturalHeight; drawSensors(); };
+    }
+  }
+
+  // ============================================================
+  // Export / Import JSON
+  // ============================================================
+  document.getElementById('btn-export').addEventListener('click', () => {
+    const profile = buildProfile();
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = (profile.name || 'profile') + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  document.getElementById('btn-import-file').addEventListener('click', () => {
+    document.getElementById('import-file-input').click();
+  });
+  document.getElementById('import-file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        loadProfile(JSON.parse(ev.target.result));
+      } catch {
+        alert(t('alert.json_error'));
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  // ============================================================
+  // Server: save / load list / load / delete
+  // ============================================================
+  document.getElementById('btn-save-server').addEventListener('click', async () => {
+    const name = document.getElementById('profile-name').value.trim();
+    if (!name) { alert(t('alert.name_required')); return; }
+    saveStatus.textContent = t('status.saving');
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(name)}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(buildProfile())
+      });
+      if (!resp.ok) throw new Error(resp.statusText);
+      saveStatus.textContent = t('status.saved');
+      await loadServerProfileList();
+    } catch (err) {
+      saveStatus.textContent = t('status.save_failed') + err.message;
+    }
+  });
+
+  async function loadServerProfileList() {
+    try {
+      const resp = await fetch('/api/profiles');
+      if (!resp.ok) return;
+      const list = await resp.json();
+      const sel  = document.getElementById('server-profile-select');
+      const cur  = sel.value;
+      sel.innerHTML = `<option value="">${t('server.placeholder')}</option>`;
+      list.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value       = p.name;
+        opt.textContent = p.displayName || p.name;
+        sel.appendChild(opt);
+      });
+      if (cur) sel.value = cur;
+    } catch { /* ignore */ }
+  }
+
+  document.getElementById('btn-load-server').addEventListener('click', async () => {
+    const name = document.getElementById('server-profile-select').value;
+    if (!name) return;
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(name)}`);
+      if (!resp.ok) throw new Error(resp.statusText);
+      const data = await resp.json();
+      loadProfile(data);
+      saveStatus.textContent = t('status.loaded', { name: data.name });
+    } catch (err) {
+      alert(t('alert.load_failed') + err.message);
+    }
+  });
+
+  document.getElementById('btn-delete-server').addEventListener('click', async () => {
+    const name = document.getElementById('server-profile-select').value;
+    if (!name) return;
+    if (!confirm(t('confirm.delete', { name }))) return;
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!resp.ok) throw new Error(resp.statusText);
+      saveStatus.textContent = t('status.deleted', { name });
+      await loadServerProfileList();
+    } catch (err) {
+      alert(t('alert.delete_failed') + err.message);
+    }
+  });
+
+  // ============================================================
+  // Floating Edit Panel
+  // ============================================================
+  function openFloatingPanel(s) {
+    fpSensorId = s.id;
+    document.getElementById('fp-title').textContent = s.label;
+    document.getElementById('fp-label').value       = s.label;
+    document.getElementById('fp-index').value       = s.index;
+    document.getElementById('fp-enabled').checked  = s.enabled;
+
+    // Screen position of sensor dot (getBoundingClientRect accounts for zoom+pan)
+    const rect = bgImg.getBoundingClientRect();
+    const sx   = rect.left + s.x * rect.width;
+    const sy   = rect.top  + s.y * rect.height;
+
+    const panel = document.getElementById('floating-panel');
+    panel.style.display = 'block';
+    const pw = 230, ph = 250;
+    let left = sx + 14;
+    if (left + pw > window.innerWidth - 10) left = sx - pw - 14;
+    let top = sy - 20;
+    if (top + ph > window.innerHeight - 10) top = window.innerHeight - ph - 10;
+    panel.style.left = `${Math.max(5, left)}px`;
+    panel.style.top  = `${Math.max(5, top)}px`;
+
+    if (monitorConnected && liveSensorCount > 0) {
+      document.getElementById('fp-monitor').style.display = '';
+      updateFpMonitor();
+    } else {
+      document.getElementById('fp-monitor').style.display = 'none';
+    }
+
+    // Translate i18n strings in panel
+    document.querySelectorAll('#floating-panel [data-i18n]').forEach(el => {
+      el.textContent = t(el.dataset.i18n);
+    });
+  }
+
+  function closeFloatingPanel() {
+    document.getElementById('floating-panel').style.display = 'none';
+    fpSensorId = -1;
+  }
+
+  function updateFpMonitor() {
+    if (fpSensorId < 0) return;
+    const s = sensors.find(s => s.id === fpSensorId);
+    if (!s) return;
+    const list = document.getElementById('fp-ch-list');
+    const maxV = Math.max(...liveValues.filter(Number.isFinite), 1);
+    list.innerHTML = '';
+    for (let i = 0; i < liveSensorCount; i++) {
+      const v   = liveValues[i];
+      const pct = Number.isFinite(v) ? Math.round((v / maxV) * 100) : 0;
+      const isAssigned = (i === s.index);
+      const isSpike    = (i === spikeIndex);
+      const row = document.createElement('div');
+      row.style.cssText = `display:flex;gap:4px;align-items:center;cursor:pointer;
+          padding:2px 3px;border-radius:3px;font-size:0.68rem;
+          ${isSpike    ? 'background:rgba(255,193,7,0.3);'  : ''}
+          ${isAssigned ? 'outline:1px solid #0d6efd;'       : ''}`;
+      row.innerHTML = `
+        <span style="width:20px;text-align:right;color:#999;">${i}</span>
+        <div style="flex:1;height:5px;background:#e9ecef;border-radius:2px;">
+          <div style="height:5px;background:#0d6efd;border-radius:2px;width:${pct}%"></div>
+        </div>
+        <span style="width:38px;text-align:right;">${Number.isFinite(v) ? v.toFixed(1) : '--'}</span>`;
+      row.addEventListener('click', () => {
+        s.index = i;
+        document.getElementById('fp-index').value = i;
+        renderSensorTable(); drawSensors();
+        updateMonitorTable(); updateFpMonitor();
+      });
+      list.appendChild(row);
+    }
+  }
+
+  // Floating panel event bindings
+  document.getElementById('fp-close').addEventListener('click', closeFloatingPanel);
+
+  document.getElementById('fp-delete').addEventListener('click', () => {
+    sensors = sensors.filter(s => s.id !== fpSensorId);
+    if (selectedId === fpSensorId) selectedId = -1;
+    closeFloatingPanel();
+    renderSensorTable();
+    drawSensors();
+  });
+
+  document.getElementById('fp-label').addEventListener('input', () => {
+    const s = sensors.find(s => s.id === fpSensorId);
+    if (!s) return;
+    s.label = document.getElementById('fp-label').value;
+    document.getElementById('fp-title').textContent = s.label;
+    drawSensors();
+    const inp = sensorTbody.querySelector(`input[data-field="label"][data-sid="${s.id}"]`);
+    if (inp) inp.value = s.label;
+  });
+
+  document.getElementById('fp-index').addEventListener('change', () => {
+    const s = sensors.find(s => s.id === fpSensorId);
+    if (!s) return;
+    s.index = Math.max(0, parseInt(document.getElementById('fp-index').value) || 0);
+    renderSensorTable(); updateMonitorTable(); updateFpMonitor();
+  });
+
+  document.getElementById('fp-enabled').addEventListener('change', () => {
+    const s = sensors.find(s => s.id === fpSensorId);
+    if (!s) return;
+    s.enabled = document.getElementById('fp-enabled').checked;
+    drawSensors();
+  });
+
+  // Close panel when clicking outside
+  document.addEventListener('mousedown', e => {
+    const panel = document.getElementById('floating-panel');
+    if (panel.style.display !== 'none' &&
+        !panel.contains(e.target) &&
+        !canvasWrapper.contains(e.target)) {
+      closeFloatingPanel();
+    }
+  }, true);
+
+  // ============================================================
+  // Live Device Monitor — SSE 即時通道監視
+  // ============================================================
+  let liveSource       = null;
+  let liveValues       = [];
+  let prevLiveValues   = [];
+  let liveSensorCount  = 0;
+  let monitorConnected = false;
+  let monitorRows      = [];
+  let spikeIndex       = -1;
+  const SPIKE_THRESHOLD = 50;
+
+  async function loadDevices() {
+    try {
+      const resp = await fetch('/api/devices');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const sel = document.getElementById('device-select');
+      sel.innerHTML = `<option value="">${t('monitor.device_placeholder')}</option>`;
+      (data.items || []).forEach(d => {
+        const opt = document.createElement('option');
+        opt.value       = d.dn || '';
+        opt.textContent = d.name || d.dn || opt.value;
+        sel.appendChild(opt);
+      });
+    } catch { /* ignore */ }
+  }
+
+  function connectDevice() {
+    const dn = document.getElementById('device-select').value;
+    if (!dn) return;
+    disconnectDevice();
+    updateMonitorStatus('connecting');
+    liveSource = new EventSource(`/stream/${encodeURIComponent(dn)}`);
+    liveSource.addEventListener('snapshot', e => {
+      const data = JSON.parse(e.data);
+      if (Array.isArray(data.data)) data.data.forEach(applyLiveEntry);
+    });
+    liveSource.addEventListener('update', e => {
+      const data = JSON.parse(e.data);
+      if (Array.isArray(data)) data.forEach(applyLiveEntry);
+      else applyLiveEntry(data);
+    });
+    liveSource.onerror = () => {
+      if (!monitorConnected) updateMonitorStatus('error');
+    };
+  }
+
+  function disconnectDevice() {
+    if (liveSource) { liveSource.close(); liveSource = null; }
+    monitorConnected = false;
+    liveValues       = [];
+    liveSensorCount  = 0;
+    monitorRows      = [];
+    document.getElementById('monitor-tbody').innerHTML = '';
+    document.getElementById('monitor-panel').style.display = 'none';
+    document.getElementById('monitor-hint').style.display  = 'none';
+    updateMonitorStatus('disconnected');
+  }
+
+  function applyLiveEntry(entry) {
+    if (!entry || !entry.payload || !Array.isArray(entry.payload.p)) return;
+    const newVals  = entry.payload.p.map(Number);
+    const newCount = (Number.isInteger(entry.payload.sn) && entry.payload.sn > 0)
+      ? entry.payload.sn : newVals.length;
+
+    spikeIndex = -1;
+    let maxDelta = SPIKE_THRESHOLD;
+    if (prevLiveValues.length === newVals.length) {
+      for (let i = 0; i < newVals.length; i++) {
+        const delta = newVals[i] - prevLiveValues[i];
+        if (delta > maxDelta) { maxDelta = delta; spikeIndex = i; }
+      }
+    }
+    prevLiveValues = liveValues.slice();
+    liveValues     = newVals;
+
+    if (newCount !== liveSensorCount) {
+      liveSensorCount = newCount;
+      buildMonitorTable();
+    }
+    if (!monitorConnected) {
+      monitorConnected = true;
+      updateMonitorStatus('connected');
+      document.getElementById('monitor-panel').style.display = '';
+      document.getElementById('monitor-hint').style.display  = '';
+    }
+    updateMonitorTable();
+    updateFpMonitor();
+  }
+
+  function buildMonitorTable() {
+    const tbody = document.getElementById('monitor-tbody');
+    tbody.innerHTML = '';
+    monitorRows = [];
+    for (let i = 0; i < liveSensorCount; i++) {
+      const tr = document.createElement('tr');
+      tr.className  = 'monitor-row';
+      tr.dataset.ch = i;
+      tr.innerHTML = `
+        <td style="font-size:0.7rem;" class="text-muted">${i}</td>
+        <td><div class="monitor-bar-bg"><div class="monitor-bar" id="mbar-${i}" style="width:0%"></div></div></td>
+        <td style="font-size:0.7rem;" id="mval-${i}">--</td>
+        <td><button class="btn btn-outline-secondary monitor-assign"
+            style="font-size:0.65rem;padding:1px 4px;line-height:1.2;"
+            data-ch="${i}">${t('monitor.assign')}</button></td>`;
+
+      const handleAssign = () => {
+        const s = sensors.find(s => s.id === selectedId);
+        if (!s) { showMonitorToast(t('monitor.noSelection')); return; }
+        s.index = i;
+        renderSensorTable();
+        drawSensors();
+        updateMonitorTable();
+      };
+
+      tr.querySelector('.monitor-assign').addEventListener('click', e => {
+        e.stopPropagation();
+        handleAssign();
+      });
+      tr.addEventListener('click', handleAssign);
+
+      tbody.appendChild(tr);
+      monitorRows.push(tr);
+    }
+  }
+
+  function updateMonitorTable() {
+    const maxVal = Math.max(...liveValues.filter(Number.isFinite), 1);
+    const selectedSensor = sensors.find(s => s.id === selectedId);
+    const assignedCh     = selectedSensor ? selectedSensor.index : -1;
+
+    for (let i = 0; i < monitorRows.length && i < liveValues.length; i++) {
+      const tr  = monitorRows[i];
+      const v   = liveValues[i];
+      const pct = Number.isFinite(v) ? Math.round((v / maxVal) * 100) : 0;
+
+      const bar = document.getElementById(`mbar-${i}`);
+      if (bar) bar.style.width = `${pct}%`;
+
+      const valEl = document.getElementById(`mval-${i}`);
+      if (valEl) valEl.textContent = Number.isFinite(v) ? v.toFixed(1) : '--';
+
+      tr.classList.toggle('monitor-spike',    i === spikeIndex);
+      tr.classList.toggle('monitor-assigned', i === assignedCh);
+    }
+  }
+
+  function updateMonitorStatus(state) {
+    const dot     = document.getElementById('monitor-status-dot');
+    const text    = document.getElementById('monitor-status-text');
+    const btn     = document.getElementById('btn-connect');
+    const statusDiv = document.getElementById('monitor-status');
+    if (state === 'connected') {
+      dot.textContent  = '●'; dot.style.color = '#198754';
+      text.textContent = `${t('monitor.connected')} · ${liveSensorCount} ${t('monitor.sensors')}`;
+      statusDiv.className = 'small mb-2 text-success';
+      btn.textContent  = t('monitor.disconnect');
+      btn.className    = 'btn btn-sm btn-outline-danger';
+    } else if (state === 'connecting') {
+      dot.textContent  = '○'; dot.style.color = '#6c757d';
+      text.textContent = t('monitor.loading');
+      statusDiv.className = 'small mb-2 text-muted';
+    } else if (state === 'error') {
+      dot.textContent  = '●'; dot.style.color = '#dc3545';
+      text.textContent = t('monitor.error');
+      statusDiv.className = 'small mb-2 text-danger';
+      btn.textContent  = t('monitor.connect');
+      btn.className    = 'btn btn-sm btn-outline-primary';
+    } else {
+      dot.textContent  = '○'; dot.style.color = '#6c757d';
+      text.textContent = t('monitor.disconnected');
+      statusDiv.className = 'small mb-2 text-muted';
+      btn.textContent  = t('monitor.connect');
+      btn.className    = 'btn btn-sm btn-outline-primary';
+    }
+  }
+
+  function showMonitorToast(msg) {
+    let toast = document.getElementById('monitor-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'monitor-toast';
+      toast.className = 'position-fixed bottom-0 end-0 m-3 p-2 bg-warning text-dark rounded shadow';
+      toast.style.cssText = 'z-index:9999;font-size:0.85rem;max-width:260px;display:none;';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.display = 'block';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.display = 'none'; }, 2500);
+  }
+
+  document.getElementById('btn-connect').addEventListener('click', () => {
+    if (monitorConnected || liveSource) disconnectDevice();
+    else connectDevice();
+  });
+
+  // ============================================================
+  // Init
+  // ============================================================
+  applyEditorLanguage();
+  loadServerProfileList();
+  loadDevices();
+  renderSensorTable();
+  drawSensors();
+  applyCanvasTransform();
+})();
+</script>
+</body>
+</html>

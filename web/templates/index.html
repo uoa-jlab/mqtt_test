@@ -41,6 +41,9 @@
               <a href="/downloads" class="btn btn-sm btn-outline-primary d-flex align-items-center gap-1" title="Download Files">
                   <i class="fas fa-download"></i> <span class="d-none d-sm-inline">Files</span>
               </a>
+              <a href="/profile_editor" class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" title="Profile Editor">
+                  <i class="fas fa-map-marked-alt"></i> <span class="d-none d-sm-inline">Profiles</span>
+              </a>
               <a href="/logout" class="btn btn-sm btn-outline-danger" title="Logout">
                   <i class="fas fa-sign-out-alt"></i>
               </a>
@@ -177,11 +180,18 @@
                                 <option value="" data-i18n="controls.waiting">Waiting...</option>
                             </select>
                         </div>
-                        <div class="input-group mb-2">
+                        <div class="input-group mb-2 js-layout-row">
                             <span class="input-group-text" data-i18n="controls.layout">Layout</span>
                             <select class="form-select js-layout-selector" disabled>
                                 <option value="">--</option>
                             </select>
+                        </div>
+                        <div class="input-group mb-2 js-profile-row">
+                            <span class="input-group-text" data-i18n="controls.profile">Profile</span>
+                            <select class="form-select js-profile-selector">
+                                <option value="">-- None (Standard) --</option>
+                            </select>
+                            <button class="btn btn-outline-secondary js-profile-reload-btn" title="刷新 Profile 列表">↻</button>
                         </div>
                         <div class="mirror-toggle-group d-flex flex-wrap align-items-center gap-3">
                             <div class="form-check form-switch mb-0">
@@ -191,6 +201,29 @@
                             <div class="form-check form-switch mb-0">
                                 <input class="form-check-input js-mirror-cols" type="checkbox" />
                                 <label class="form-check-label" data-i18n="controls.mirror_cols">Col Mirror</label>
+                            </div>
+                        </div>
+                        <!-- Profile 模式顯示控件（profile 激活時顯示，標準模式時隱藏）-->
+                        <div class="js-profile-display-controls mt-1" style="display:none">
+                            <div class="btn-group btn-group-sm w-100 mb-1">
+                                <button type="button" class="btn btn-outline-primary active js-profile-mode-btn"
+                                        data-mode="2d" data-i18n="display.2d">2D</button>
+                                <button type="button" class="btn btn-outline-primary js-profile-mode-btn"
+                                        data-mode="3d" data-i18n="display.3d">3D</button>
+                            </div>
+                            <div class="d-flex gap-1">
+                                <div class="input-group input-group-sm flex-fill">
+                                    <span class="input-group-text" style="font-size:0.7rem;" data-i18n="display.p_min">Min</span>
+                                    <input type="number" class="form-control js-profile-pmin" value="300">
+                                </div>
+                                <div class="input-group input-group-sm flex-fill">
+                                    <span class="input-group-text" style="font-size:0.7rem;" data-i18n="display.p_max">Max</span>
+                                    <input type="number" class="form-control js-profile-pmax" value="1000">
+                                </div>
+                            </div>
+                            <div class="d-flex align-items-center gap-1 mt-1">
+                                <span style="font-size:0.7rem;white-space:nowrap;" data-i18n="display.dot_size">Dot Size</span>
+                                <input type="range" class="form-range flex-fill js-profile-dot-size" min="0.5" max="4" step="0.25" value="1">
                             </div>
                         </div>
                     </div>
@@ -352,6 +385,13 @@
           "heatmap.empty.no_layout": "请选择布局组合",
           "heatmap.empty.waiting": "等待设备数据更新...",
           "console.snapshot_fetch_failed": "无法获取数据",
+          "controls.profile": "显示模式",
+          "controls.profile_none": "-- 无 (原始模式) --",
+          "display.2d": "2D",
+          "display.3d": "3D",
+          "display.p_min": "最小",
+          "display.p_max": "最大",
+          "display.dot_size": "点大小",
         },
         ja: {
           "page.title": "リアルタイム圧力モニター",
@@ -391,6 +431,13 @@
           "heatmap.empty.no_layout": "レイアウトを選択してください",
           "heatmap.empty.waiting": "デバイスデータの更新を待機中...",
           "console.snapshot_fetch_failed": "データを取得できませんでした",
+          "controls.profile": "プロファイル",
+          "controls.profile_none": "-- なし (標準モード) --",
+          "display.2d": "2D",
+          "display.3d": "3D",
+          "display.p_min": "最小",
+          "display.p_max": "最大",
+          "display.dot_size": "ドットサイズ",
         },
         en: {
           "page.title": "Real-Time Pressure Dashboard",
@@ -430,6 +477,13 @@
           "heatmap.empty.no_layout": "Choose a layout",
           "heatmap.empty.waiting": "Waiting for device data...",
           "console.snapshot_fetch_failed": "Failed to fetch data",
+          "controls.profile": "Profile",
+          "controls.profile_none": "-- None (Standard) --",
+          "display.2d": "2D",
+          "display.3d": "3D",
+          "display.p_min": "Min",
+          "display.p_max": "Max",
+          "display.dot_size": "Dot Size",
         }
       };
 
@@ -473,8 +527,12 @@
         updateRangePlaceholders(null, null);
         
         // Refresh panel layouts to update language in options
-        panels.forEach(p => updateLayoutOptionsForPanel(p));
-        updateDeviceOptions(); 
+        panels.forEach(p => {
+          updateLayoutOptionsForPanel(p);
+          const opt = p.profileSelector && p.profileSelector.querySelector('option[value=""]');
+          if (opt) opt.textContent = t('controls.profile_none');
+        });
+        updateDeviceOptions();
       }
 
       function setLanguage(lang) {
@@ -511,8 +569,17 @@
             deviceSelector: root.querySelector('.js-device-selector'),
             layoutSelector: root.querySelector('.js-layout-selector'),
             heatmapContainer: root.querySelector('.js-heatmap-container'),
+            layoutRow: root.querySelector('.js-layout-row'),
+            profileSelector: root.querySelector('.js-profile-selector'),
+            profileReloadBtn: root.querySelector('.js-profile-reload-btn'),
             mirrorRowsToggle: root.querySelector('.js-mirror-rows'),
             mirrorColsToggle: root.querySelector('.js-mirror-cols'),
+            mirrorToggleGroup: root.querySelector('.mirror-toggle-group'),
+            profileDisplayControls: root.querySelector('.js-profile-display-controls'),
+            profileModeBtns: root.querySelectorAll('.js-profile-mode-btn'),
+            profilePMin: root.querySelector('.js-profile-pmin'),
+            profilePMax: root.querySelector('.js-profile-pmax'),
+            profileDotSize: root.querySelector('.js-profile-dot-size'),
             removeBtn: root.querySelector('.js-remove-panel-btn'),
             recordBtn: root.querySelector('.js-record-btn'),
             selectCheckbox: root.querySelector('.js-panel-select'),
@@ -540,7 +607,13 @@
             layoutOptionsCache: { dn: null, sensorCount: null, options: [], selectedKey: null, lang: null },
             lastSensorUpdate: 0,
             lastCopUpdate: 0,
-            three: null
+            three: null,
+            // Profile mode
+            profile: null,
+            profileCanvas: null,
+            profileImg: null,
+            profileWrapper: null,
+            profileThreeExtra: null
         };
 
         // Event Listeners
@@ -600,14 +673,76 @@
             updateAllHeatmaps();
         });
 
+        panel.profileSelector.addEventListener('change', (e) => {
+            const name = e.target.value;
+            if (!name) {
+                loadProfileForPanel(panel, null);
+                return;
+            }
+            fetch(`/api/profiles/${encodeURIComponent(name)}`)
+                .then(r => r.ok ? r.json() : null)
+                .then(data => { if (data) loadProfileForPanel(panel, data); })
+                .catch(() => {});
+        });
+
+        panel.profileReloadBtn.addEventListener('click', () => {
+            loadProfileList(panel, panel.profileSelector.value);
+        });
+
+        panel.profileModeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (!panel.profile) return;
+                const mode = btn.dataset.mode;
+                panel.profile.display = panel.profile.display || {};
+                panel.profile.display.mode = mode;
+                // 清除已有覆蓋層以強制重建
+                if (panel.profileWrapper) {
+                    panel.profileWrapper.remove();
+                    panel.profileWrapper = null;
+                    panel.profileCanvas  = null;
+                    panel.profileImg     = null;
+                }
+                if (panel.three && panel.three.userData && panel.three.userData.profileMode) {
+                    panel.three.controls.dispose();
+                    panel.three.renderer.dispose();
+                    panel.three = null;
+                }
+                panel.profileModeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+                updateAllHeatmaps();
+            });
+        });
+
+        [panel.profilePMin, panel.profilePMax].forEach(inp => {
+            inp.addEventListener('change', () => {
+                if (!panel.profile) return;
+                panel.profile.display = panel.profile.display || {};
+                panel.profile.display.pressureMin = parseFloat(panel.profilePMin.value) || 0;
+                panel.profile.display.pressureMax = parseFloat(panel.profilePMax.value) || 1000;
+                updateAllHeatmaps();
+            });
+        });
+
+        panel.profileDotSize.addEventListener('input', () => {
+            if (!panel.profile) return;
+            panel.profile.display = panel.profile.display || {};
+            panel.profile.display.dotSize = parseFloat(panel.profileDotSize.value) || 1;
+            // 3D 模式直接更新 material.size（不需重建場景）
+            if (panel.three && panel.three.points && panel.three.basePointSize) {
+                panel.three.points.material.size = panel.three.basePointSize * (panel.profile.display.dotSize || 1);
+                panel.three.points.material.needsUpdate = true;
+            }
+            updateAllHeatmaps();
+        });
+
         panelsContainer.appendChild(root);
         panels.push(panel);
-        
+
         // Initial state
         applyCOPStateToPanel(panel);
         updateDeviceOptions();
         updateLayoutOptionsForPanel(panel);
         updatePanelRecordingState(panel);
+        loadProfileList(panel);
         
         return panel;
       }
@@ -619,10 +754,14 @@
             // User requested "upgrade", let's keep it flexible.
         }
         
+        // Cleanup Profile assets
+        cleanupPanelProfile(panelToRemove);
+
         // Cleanup Three.js
         if (panelToRemove.three) {
             if (panelToRemove.three.geometry) panelToRemove.three.geometry.dispose();
             if (panelToRemove.three.material) panelToRemove.three.material.dispose();
+            if (panelToRemove.three.controls) panelToRemove.three.controls.dispose();
             panelToRemove.three.renderer.dispose();
             panelToRemove.three = null;
         }
@@ -1059,8 +1198,355 @@
           colAttr.needsUpdate = true;
       }
       
+      // --- Profile Mode ---
+
+      const PROFILE_PLANE_SIZE = 4.0;
+
+      // 將 SURFACE_GRADIENT_LUT 索引轉為 CSS rgb 字符串
+      function lutToRgb(lutIdx) {
+          const base = lutIdx * 3;
+          const r = Math.round(SURFACE_GRADIENT_LUT[base]   * 255);
+          const g = Math.round(SURFACE_GRADIENT_LUT[base+1] * 255);
+          const b = Math.round(SURFACE_GRADIENT_LUT[base+2] * 255);
+          return `rgb(${r},${g},${b})`;
+      }
+
+      // 載入 Profile 下拉列表
+      async function loadProfileList(panel, keepValue) {
+          try {
+              const resp = await fetch('/api/profiles');
+              if (!resp.ok) return;
+              const list = await resp.json();
+              const sel = panel.profileSelector;
+              const cur = keepValue !== undefined ? keepValue : sel.value;
+              sel.innerHTML = `<option value="">${t('controls.profile_none')}</option>`;
+              list.forEach(p => {
+                  const opt = document.createElement('option');
+                  opt.value = p.name;
+                  opt.textContent = p.displayName || p.name;
+                  sel.appendChild(opt);
+              });
+              if (cur) sel.value = cur;
+          } catch (_) {}
+      }
+
+      // 清理 panel 上的所有 profile 資產（不觸及 panel.three）
+      function cleanupPanelProfile(panel) {
+          // 清理 2D 元素
+          if (panel.profileWrapper) {
+              panel.profileWrapper.remove();
+              panel.profileWrapper = null;
+              panel.profileCanvas = null;
+              panel.profileImg    = null;
+          }
+          panel._profileFitImage = null;
+          // 重置容器樣式（setupProfile2d 設置的 flex/overflow）
+          panel.heatmapContainer.style.display        = '';
+          panel.heatmapContainer.style.alignItems     = '';
+          panel.heatmapContainer.style.justifyContent = '';
+          panel.heatmapContainer.style.overflow       = '';
+          // 清理 3D profile 附加資產（背景平面 mesh + texture）
+          if (panel.profileThreeExtra) {
+              const { bgMesh, texture } = panel.profileThreeExtra;
+              if (panel.three && bgMesh) panel.three.scene.remove(bgMesh);
+              if (bgMesh && bgMesh.geometry) bgMesh.geometry.dispose();
+              if (bgMesh && bgMesh.material) bgMesh.material.dispose();
+              if (texture) texture.dispose();
+              panel.profileThreeExtra = null;
+          }
+          // 清理 profile 模式的 Three.js（重新建立以恢復原始模式）
+          if (panel.three && panel.three.userData && panel.three.userData.profileMode) {
+              if (panel.three.points) panel.three.scene.remove(panel.three.points);
+              panel.three.geometry.dispose();
+              panel.three.points.material.dispose();
+              panel.three.controls.dispose();
+              panel.three.renderer.dispose();
+              panel.three = null;
+          }
+          panel.profile = null;
+      }
+
+      // 加載 / 切換 Profile
+      function loadProfileForPanel(panel, profileData) {
+          cleanupPanelProfile(panel);
+
+          if (!profileData) {
+              // 恢復原始模式
+              if (panel.layoutRow) panel.layoutRow.style.display = '';
+              if (panel.mirrorToggleGroup) panel.mirrorToggleGroup.style.display = '';
+              if (panel.profileDisplayControls) panel.profileDisplayControls.style.display = 'none';
+              updateAllHeatmaps();
+              requestSurfaceRefresh();
+              return;
+          }
+
+          panel.profile = profileData;
+          // 隱藏 Layout 選擇器（由 Profile 定義傳感器佈局）
+          if (panel.layoutRow) panel.layoutRow.style.display = 'none';
+          // 隱藏 mirror 開關，顯示 profile 顯示控件
+          if (panel.mirrorToggleGroup) panel.mirrorToggleGroup.style.display = 'none';
+          if (panel.profileDisplayControls) panel.profileDisplayControls.style.display = '';
+
+          // 同步控件值
+          const disp = profileData.display || {};
+          const activeMode = disp.mode || '2d';
+          panel.profileModeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === activeMode));
+          if (Number.isFinite(disp.pressureMin)) panel.profilePMin.value = disp.pressureMin;
+          if (Number.isFinite(disp.pressureMax)) panel.profilePMax.value = disp.pressureMax;
+          if (Number.isFinite(disp.dotSize))     panel.profileDotSize.value = disp.dotSize;
+
+          // 2D/3D 覆蓋層採用懶加載，由 renderPanelHeatmap 在 state===ready 時建立
+
+          updateAllHeatmaps();
+          requestSurfaceRefresh();
+      }
+
+      // 初始化 2D profile 覆蓋層
+      function setupProfile2d(panel) {
+          const container = panel.heatmapContainer;
+          container.innerHTML = '';
+
+          // 讓容器以 flex 居中並裁剪溢出
+          container.style.display        = 'flex';
+          container.style.alignItems     = 'center';
+          container.style.justifyContent = 'center';
+          container.style.overflow       = 'hidden';
+
+          const wrapper = document.createElement('div');
+          wrapper.style.cssText = 'position:relative;display:inline-block;line-height:0;';
+
+          const img = document.createElement('img');
+          img.src = (panel.profile.background && panel.profile.background.imageData) || '';
+          img.style.cssText = 'display:block;';  // 寬高由 fitImage 動態計算
+
+          const canvas = document.createElement('canvas');
+          canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+
+          wrapper.appendChild(img);
+          wrapper.appendChild(canvas);
+          container.appendChild(wrapper);
+
+          panel.profileWrapper = wrapper;
+          panel.profileImg    = img;
+          panel.profileCanvas = canvas;
+
+          // 計算適配尺寸，讓圖片填入容器但不溢出
+          function fitImage() {
+              if (!img.naturalWidth || !img.naturalHeight) return;
+              const cw    = container.clientWidth  || 600;
+              const ch    = container.clientHeight || 360;
+              const ratio = img.naturalWidth / img.naturalHeight;
+              let dw = cw, dh = cw / ratio;
+              if (dh > ch) { dh = ch; dw = ch * ratio; }
+              img.style.width  = `${Math.round(dw)}px`;
+              img.style.height = `${Math.round(dh)}px`;
+          }
+          img.addEventListener('load', fitImage);
+          if (img.complete && img.naturalWidth) fitImage();
+          panel._profileFitImage = fitImage;
+      }
+
+      // 渲染 2D profile（在 surfaceLoopTick 中調用）
+      function renderProfile2d(panel, pressureValues, range) {
+          if (!panel.profileCanvas || !panel.profileImg) return;
+          const img = panel.profileImg;
+          const canvas = panel.profileCanvas;
+          const w = img.clientWidth;
+          const h = img.clientHeight;
+          if (!w || !h) return;
+
+          const dpr = window.devicePixelRatio || 1;
+          canvas.width  = w * dpr;
+          canvas.height = h * dpr;
+          const ctx = canvas.getContext('2d');
+          ctx.scale(dpr, dpr);
+          ctx.clearRect(0, 0, w, h);
+
+          const min  = Number.isFinite(range?.min) ? range.min : 0;
+          const max  = Number.isFinite(range?.max) ? range.max : min;
+          const span = max - min;
+          const sensors = panel.profile.sensors || [];
+          const dotSizeMult = (panel.profile.display && panel.profile.display.dotSize) || 1;
+          const radius  = Math.max(4, Math.min(w, h) * 0.025 * dotSizeMult);
+
+          sensors.forEach(s => {
+              if (!s.enabled) return;
+              const value = pressureValues[s.index];
+              if (!Number.isFinite(value)) return;
+
+              const px = s.x * w;
+              const py = s.y * h;
+              const ratio   = span > 0 ? Math.max(0, Math.min(1, (value - min) / span)) : 0;
+              const lutIdx  = Math.round(ratio * (SURFACE_LUT_SIZE - 1));
+              const color   = lutToRgb(lutIdx);
+
+              ctx.beginPath();
+              ctx.arc(px, py, radius, 0, Math.PI * 2);
+              ctx.fillStyle = color;
+              ctx.globalAlpha = 0.85;
+              ctx.fill();
+              ctx.globalAlpha = 1;
+              ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+          });
+      }
+
+      // 構建 profile 3D 點雲 geometry
+      function buildProfileGeometry(sensors, aspectRatio) {
+          const ar = aspectRatio > 0 ? aspectRatio : 1;
+          const enabledSensors = sensors.filter(s => s.enabled);
+          const pointCount = enabledSensors.length;
+          if (pointCount === 0) {
+              const g = new THREE.BufferGeometry();
+              g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+              g.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(0), 3));
+              g.userData = { sensorMap: [] };
+              return g;
+          }
+
+          const positions = new Float32Array(pointCount * 3);
+          const colors    = new Float32Array(pointCount * 3);
+          const sensorMap = [];
+          const pw = PROFILE_PLANE_SIZE;
+          const ph = PROFILE_PLANE_SIZE / ar;
+
+          enabledSensors.forEach((s, i) => {
+              const xw = (s.x - 0.5) * pw;
+              const zw = (s.y - 0.5) * ph;
+              positions[i*3]   = xw;
+              positions[i*3+1] = 0;
+              positions[i*3+2] = zw;
+              colors[i*3]   = SURFACE_MISSING_RGB[0];
+              colors[i*3+1] = SURFACE_MISSING_RGB[1];
+              colors[i*3+2] = SURFACE_MISSING_RGB[2];
+              sensorMap.push({ index: s.index, xWorld: xw, zWorld: zw });
+          });
+
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          geo.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
+          geo.userData = { sensorMap, profileMode: true };
+          return geo;
+      }
+
+      // 初始化 3D profile Three.js 場景
+      function setupProfile3d(panel) {
+          if (!threeIsAvailable()) return;
+          const profile = panel.profile;
+          const ar = (profile.background && profile.background.aspectRatio > 0)
+                     ? profile.background.aspectRatio : 1;
+          const pw = PROFILE_PLANE_SIZE;
+          const ph = PROFILE_PLANE_SIZE / ar;
+
+          // 如果已有 Three.js，先銷毀
+          if (panel.three) {
+              if (panel.three.points) panel.three.scene.remove(panel.three.points);
+              if (panel.three.geometry) panel.three.geometry.dispose();
+              if (panel.three.points && panel.three.points.material) panel.three.points.material.dispose();
+              if (panel.three.controls) panel.three.controls.dispose();
+              panel.three.renderer.dispose();
+              panel.three = null;
+          }
+
+          const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+          renderer.setPixelRatio(window.devicePixelRatio || 1);
+          renderer.domElement.className = 'pressure-surface-canvas';
+
+          const scene    = new THREE.Scene();
+          const camera   = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+          const controls = new window.OrbitControls(camera, renderer.domElement);
+          controls.enableDamping = false;
+          controls.target.set(0, 0, 0);
+
+          // 背景底板（僅在有底圖時創建，避免 geometry 洩漏）
+          let texture = null;
+          let bgMesh  = null;
+          if (profile.background && profile.background.imageData) {
+              const planeGeo = new THREE.PlaneGeometry(pw, ph);
+              planeGeo.rotateX(-Math.PI / 2);
+              texture = new THREE.TextureLoader().load(profile.background.imageData);
+              const planeMat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+              bgMesh = new THREE.Mesh(planeGeo, planeMat);
+              bgMesh.position.y = -0.01;
+              scene.add(bgMesh);
+          }
+          panel.profileThreeExtra = { bgMesh, texture };
+
+          // 傳感器點雲
+          const geo          = buildProfileGeometry(profile.sensors || [], ar);
+          const basePointSize = Math.max(0.06, Math.min(pw, ph) * 0.025);
+          const dotSizeMult   = (profile.display && profile.display.dotSize) || 1;
+          const material  = new THREE.PointsMaterial({
+              size: basePointSize * dotSizeMult, sizeAttenuation: true,
+              vertexColors: true, transparent: true, opacity: 0.95
+          });
+          const points = new THREE.Points(geo, material);
+          scene.add(points);
+
+          const span = Math.max(pw, ph) * 0.5;
+          camera.position.set(0, span * 1.8, span * 2.8);
+          camera.lookAt(0, 0, 0);
+          controls.minDistance = span * 1.2;
+          controls.maxDistance = span * 16;
+          controls.update();
+
+          const three = {
+              renderer, scene, camera, controls, points,
+              geometry: geo,
+              basePointSize,
+              sampleIndices: null, sampleWeights: null,
+              rows: 1, cols: (profile.sensors || []).filter(s => s.enabled).length,
+              needsResize: true, lastWidth: 0, lastHeight: 0,
+              userData: { profileMode: true }
+          };
+          controls.addEventListener('change', () => {
+              if (three.lastWidth > 0) renderer.render(scene, camera);
+          });
+          panel.three = three;
+      }
+
+      // 更新 3D profile 點雲位置和顏色（在 surfaceLoopTick 中調用）
+      function updateProfileThreeSurface(panel, pressureValues, range) {
+          const three = panel.three;
+          if (!three || !three.geometry) return;
+          const sensorMap = three.geometry.userData.sensorMap || [];
+          if (sensorMap.length === 0) return;
+
+          const min      = Number.isFinite(range?.min) ? range.min : 0;
+          const max      = Number.isFinite(range?.max) ? range.max : min;
+          const rangeSpan = max - min;
+          const ar       = (panel.profile.background && panel.profile.background.aspectRatio > 0)
+                           ? panel.profile.background.aspectRatio : 1;
+          const ph       = PROFILE_PLANE_SIZE / ar;
+          const heightScale = rangeSpan > 0
+              ? (Math.max(PROFILE_PLANE_SIZE, ph) * SURFACE_HEIGHT_FRACTION) / rangeSpan : 0;
+
+          const posAttr = three.geometry.getAttribute('position');
+          const colAttr = three.geometry.getAttribute('color');
+          const lut     = SURFACE_GRADIENT_LUT;
+          const missing = SURFACE_MISSING_RGB;
+
+          sensorMap.forEach((sm, i) => {
+              const value = pressureValues[sm.index];
+              if (!Number.isFinite(value)) {
+                  posAttr.setY(i, 0);
+                  colAttr.setXYZ(i, missing[0], missing[1], missing[2]);
+                  return;
+              }
+              const clamped = Math.max(min, Math.min(max, value));
+              posAttr.setY(i, heightScale > 0 ? (clamped - min) * heightScale : 0);
+              const ratio  = rangeSpan > 0 ? (clamped - min) / rangeSpan : 0;
+              const lutIdx = Math.max(0, Math.min(SURFACE_LUT_SIZE - 1, Math.round(ratio * (SURFACE_LUT_SIZE - 1))));
+              const lb = lutIdx * 3;
+              colAttr.setXYZ(i, lut[lb], lut[lb+1], lut[lb+2]);
+          });
+          posAttr.needsUpdate = true;
+          colAttr.needsUpdate = true;
+      }
+
       // --- Render Orchestration ---
-      
+
       window.addEventListener("three-ready", () => {
           updateAllHeatmaps();
           requestSurfaceRefresh();
@@ -1195,6 +1681,23 @@
           if (!panel.selectedDevice) return { state: "no_device" };
           const entry = getDisplayState(panel.selectedDevice); // Use interpolated state
           if (!entry) return { state: "waiting" };
+
+          // Profile 模式：不需要 layout，直接返回原始壓力值
+          if (panel.profile) {
+              const rawValues = Array.isArray(entry.pressureValues) ? entry.pressureValues : [];
+              const validValues = rawValues.filter(v => Number.isFinite(v));
+              const hasValid = validValues.length > 0;
+              return {
+                  state: "ready",
+                  rows: 1,
+                  cols: rawValues.length,
+                  displayValues: rawValues,
+                  dataMin: hasValid ? Math.min(...validValues) : null,
+                  dataMax: hasValid ? Math.max(...validValues) : null,
+                  isProfile: true
+              };
+          }
+
           const layout = parseLayoutKey(panel.selectedLayoutKey);
           if (!layout) return { state: "no_layout" };
           const [rows, cols] = layout;
@@ -1214,6 +1717,66 @@
       
       function renderPanelHeatmap(panel, ctx, range) {
           const container = panel.heatmapContainer;
+
+          // --- Profile 模式 ---
+          if (panel.profile) {
+              container.classList.remove("has-3d");
+              // 使用 panel 自訂壓力範圍（優先於全局範圍）
+              const pd = panel.profile.display || {};
+              if (Number.isFinite(pd.pressureMin) && Number.isFinite(pd.pressureMax) && pd.pressureMin < pd.pressureMax) {
+                  range = { min: pd.pressureMin, max: pd.pressureMax };
+              }
+              if (!ctx || ctx.state === "no_device" || ctx.state === "waiting") {
+                  // 切換為佔位文字前，先銷毀 2D 覆蓋層 DOM（避免 profileCanvas 指向脫離 DOM 的節點）
+                  if (panel.profileWrapper) {
+                      panel.profileWrapper.remove();
+                      panel.profileWrapper = null;
+                      panel.profileCanvas  = null;
+                      panel.profileImg     = null;
+                      panel._profileFitImage = null;
+                      container.style.display        = '';
+                      container.style.alignItems     = '';
+                      container.style.justifyContent = '';
+                      container.style.overflow       = '';
+                  }
+                  const phKey = (!ctx || ctx.state === "no_device") ? "heatmap.empty.no_device" : "heatmap.empty.waiting";
+                  setPanelPlaceholder(panel, phKey);
+                  return;
+              }
+              if (ctx.state !== "ready") return;
+
+              const mode = (panel.profile.display && panel.profile.display.mode) || '2d';
+              if (mode === '2d') {
+                  // 確保 2D 覆蓋層已建立
+                  if (!panel.profileCanvas) setupProfile2d(panel);
+                  renderProfile2d(panel, ctx.displayValues, range);
+              } else {
+                  // 3D profile 模式
+                  if (!threeIsAvailable()) {
+                      container.innerHTML = '<div class="heatmap-placeholder">3D Not Loaded</div>';
+                      return;
+                  }
+                  if (!panel.three || !panel.three.userData || !panel.three.userData.profileMode) {
+                      setupProfile3d(panel);
+                  }
+                  const three = panel.three;
+                  if (!three) { container.innerHTML = '<div class="heatmap-placeholder">3D Init Failed</div>'; return; }
+                  if (three.renderer.domElement.parentElement !== container) {
+                      container.innerHTML = "";
+                      container.appendChild(three.renderer.domElement);
+                      three.needsResize = true;
+                  }
+                  container.classList.add("has-3d");
+                  resizeThreeSurface(panel);
+                  three.needsResize = false;
+                  updateProfileThreeSurface(panel, ctx.displayValues, range);
+                  three.controls.update();
+                  three.renderer.render(three.scene, three.camera);
+              }
+              return;
+          }
+
+          // --- 原始模式 ---
           container.classList.remove("has-3d");
           if (!ctx || ctx.state === "no_device") {
               setPanelPlaceholder(panel, "heatmap.empty.no_device");
@@ -1228,12 +1791,12 @@
               return;
           }
           if (ctx.state !== "ready") return;
-          
+
           if (!threeIsAvailable()) {
               container.innerHTML = '<div class="heatmap-placeholder">3D Library Not Loaded</div>';
               return;
           }
-          
+
           const three = ensureThreeSurface(panel, ctx.rows, ctx.cols);
           if (!three) {
               container.innerHTML = '<div class="heatmap-placeholder">3D Init Failed</div>';
@@ -1598,7 +2161,7 @@
       }
 
       function shouldRequestSurfaceRefreshForDn(dn) {
-          return panels.some(p => p.selectedDevice === dn && p.selectedLayoutKey);
+          return panels.some(p => p.selectedDevice === dn && (p.selectedLayoutKey || p.profile));
       }
 
       // --- Data Ingestion ---
