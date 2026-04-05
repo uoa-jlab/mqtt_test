@@ -21,6 +21,7 @@ from flask import (
     Flask,
     Response,
     abort,
+    g,
     jsonify,
     render_template,
     request,
@@ -33,6 +34,8 @@ from flask import (
     send_file,
     after_this_request
 )
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from flask_socketio import SocketIO as _SocketIO, emit as ws_emit, disconnect as ws_disconnect
 import zipfile
 import tempfile
 from gevent.pywsgi import WSGIServer
@@ -85,6 +88,41 @@ if not app.secret_key:
     print("[SECURITY WARNING] FLASK_SECRET_KEY not set. Using random key.", file=sys.stderr)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
+# --- Token auth ---
+TOKEN_EXPIRY = int(os.getenv("API_TOKEN_EXPIRY", str(24 * 3600)))  # 默认 24 小时
+_token_serializer: URLSafeTimedSerializer | None = None
+
+def _get_token_serializer() -> URLSafeTimedSerializer:
+    global _token_serializer
+    if _token_serializer is None:
+        _token_serializer = URLSafeTimedSerializer(app.secret_key, salt="api-token")
+    return _token_serializer
+
+def _get_current_user() -> dict | None:
+    """从 session 或 Authorization: Bearer header 获取当前用户。"""
+    if 'sso_id' in session:
+        return {'sso_id': session['sso_id']}
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        raw = auth_header[7:].strip()
+        try:
+            data = _get_token_serializer().loads(raw, max_age=TOKEN_EXPIRY)
+            return {'sso_id': data['sso_id']}
+        except (BadSignature, SignatureExpired, KeyError):
+            pass
+    return None
+
+def _current_sso_id() -> str | None:
+    """从 g.current_user（由 login_required 设置）或 session 取得 sso_id。"""
+    cu = getattr(g, 'current_user', None)
+    if cu:
+        return cu.get('sso_id')
+    return session.get('sso_id')
+
+# --- WebSocket (Socket.IO) ---
+socketio = _SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
+_ws_users: dict[str, str] = {}  # sid -> sso_id
+
 if CONFIG_CONSOLE_ENABLED:
     try:
         config_service = build_config_service_from_env()
@@ -101,38 +139,39 @@ _license_history_path = Path(LICENSE_HISTORY_PATH_RAW) if LICENSE_HISTORY_PATH_R
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
+        user = _get_current_user()
+        if not user:
+            # API 客户端（携带 Authorization 头或 JSON）返回 401，浏览器重定向登录页
+            if request.headers.get("Authorization") or request.is_json:
+                abort(401)
             return redirect(url_for('login', next=request.url))
+        g.current_user = user
         return f(*args, **kwargs)
     return decorated_function
 
-def _check_device_permission(dn: str | None) -> bool:
-    """Check if current user has permission for the given device DN."""
+def _check_device_permission_for_user(sso_id: str, dn: str) -> bool:
+    """给定 sso_id 直接检查设备权限（不依赖 session/g，供 WebSocket 处理器调用）。"""
     if not dn:
         return False
-    
-    user_sso = session.get('sso_id')
-    if not user_sso:
-        return False
-        
-    if user_sso == 'admin':
+    if sso_id == 'admin':
         return True
-        
-    # Get allowed devices for user
-    allowed_devices = db_manager.get_user_allowed_devices(user_sso)
-    
-    # Normalize inputs for comparison
+    allowed_devices = db_manager.get_user_allowed_devices(sso_id)
     target_dn_norm = _normalize_dn(dn)
-    
     for d in allowed_devices:
-        # Check against MAC (normalized)
         if _normalize_dn(d.get('mac_address')) == target_dn_norm:
             return True
-        # Check against Device ID (if DN passed is ID)
         if str(d.get('device_id')) == dn:
             return True
-            
     return False
+
+def _check_device_permission(dn: str | None) -> bool:
+    """Check if current user (session or Bearer token) has permission for the given device DN."""
+    if not dn:
+        return False
+    user_sso = _current_sso_id()
+    if not user_sso:
+        return False
+    return _check_device_permission_for_user(user_sso, dn)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -156,10 +195,24 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
+@app.route("/api/token", methods=["POST"])
+def api_token():
+    """用户名+密码换取 Bearer token，供 API / WebSocket 客户端使用。"""
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or request.form.get("username") or "").strip()
+    password = data.get("password") or request.form.get("password") or ""
+    if not username or not password:
+        return jsonify({"error": "username_and_password_required"}), 400
+    user = db_manager.authenticate_user(username, password)
+    if not user:
+        return jsonify({"error": "invalid_credentials"}), 401
+    token = _get_token_serializer().dumps({"sso_id": user["sso_id"]})
+    return jsonify({"token": token, "expires_in": TOKEN_EXPIRY, "token_type": "Bearer"})
+
 @app.route("/api/user/info")
 @login_required
 def api_user_info():
-    user = session.get('sso_id')
+    user = _current_sso_id()
     is_admin = (user == 'admin')
     # Return session timeout in seconds (static config)
     timeout = app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()
@@ -178,7 +231,7 @@ def api_session_renew():
 @app.route("/downloads")
 @login_required
 def downloads():
-    user = session['sso_id']
+    user = _current_sso_id()
     mac = request.args.get('mac')
     date_str = request.args.get('date')
     
@@ -219,7 +272,7 @@ def download_file(filepath):
     target_mac = parts[0]
     
     # Verify permission
-    user = session['sso_id']
+    user = _current_sso_id()
     if user != 'admin':
         allowed = db_manager.get_user_allowed_devices(user)
         allowed_macs = [d['mac_address'] for d in allowed]
@@ -249,7 +302,7 @@ def download_batch():
         return "No files selected", 400
 
     # Permission Check
-    user = session['sso_id']
+    user = _current_sso_id()
     if user != 'admin':
         allowed = db_manager.get_user_allowed_devices(user)
         allowed_macs = set(d['mac_address'] for d in allowed)
@@ -464,7 +517,7 @@ def _merge_results() -> list[dict]:
 @app.route("/")
 @login_required
 def index() -> str:
-    user = session['sso_id']
+    user = _current_sso_id()
     device_map = {}
     
     if user == 'admin':
@@ -500,6 +553,7 @@ def config_serve_ota_file(filename):
 
 
 @app.route("/api/latest")
+@login_required
 def proxy_latest() -> Response:
     # Proxy the latest cache endpoint without altering payload format.
     # 透明转发最新缓存接口，保持数据格式完全一致。
@@ -623,7 +677,7 @@ def config_devices() -> Response:
     svc = _require_config_service()
     all_devices = svc.list_devices()
     
-    user = session.get('sso_id')
+    user = _current_sso_id()
     if user == 'admin':
         return jsonify({"items": all_devices})
     
@@ -646,7 +700,7 @@ def config_devices() -> Response:
 @login_required
 def config_discover() -> Response:
     # Restrict discovery to admin only
-    if session.get('sso_id') != 'admin':
+    if _current_sso_id() != 'admin':
         abort(403, description="Access denied: Discovery is admin-only.")
 
     svc = _require_config_service()
@@ -687,7 +741,7 @@ def config_results() -> Response:
         # Let's add simple filter for safety.
         items = _merge_results()
         
-        user = session.get('sso_id')
+        user = _current_sso_id()
         if user != 'admin':
             allowed_db = db_manager.get_user_allowed_devices(user)
             allowed_dns = set(_normalize_dn(d['mac_address']) for d in allowed_db if d.get('mac_address'))
@@ -793,7 +847,7 @@ def config_apply_direct() -> Response:
     # Let's enforce DN check if DN is present. If only IP is present, it's risky.
     # User requirement: "ensure all migrated routes have login_required" and "check device permission".
     # If user is not admin, they shouldn't be poking random IPs.
-    if session.get('sso_id') != 'admin':
+    if _current_sso_id() != 'admin':
          # If not admin, we MUST match against a known allowed device
          if not dn:
              # Try to resolve IP to a DN from discovery? Hard.
@@ -931,7 +985,7 @@ def config_license_query() -> Response:
     target_ip = (request.args.get("target_ip") or request.args.get("ip") or "").strip()
     
     # If no DN provided, admin might be querying by IP.
-    if not dn and session.get('sso_id') != 'admin':
+    if not dn and _current_sso_id() != 'admin':
         abort(403, description="Access denied. DN required.")
         
     port_raw = request.args.get("port")
@@ -1031,6 +1085,91 @@ def api_profile_delete(name):
     return jsonify({"status": "deleted"})
 
 
+# ---------------------------------------------------------------------------
+# WebSocket (Socket.IO) — 实时数据推送，认证通过 Bearer token
+# ---------------------------------------------------------------------------
+
+@socketio.on("connect")
+def handle_ws_connect(auth):
+    """客户端连接时验证 Bearer token。auth = {'token': '...'}"""
+    token = (auth or {}).get("token") or request.args.get("token", "")
+    if not token:
+        return False  # 拒绝连接
+    try:
+        data = _get_token_serializer().loads(token, max_age=TOKEN_EXPIRY)
+        sso_id = data["sso_id"]
+    except (BadSignature, SignatureExpired, KeyError):
+        return False
+    _ws_users[request.sid] = sso_id
+
+
+@socketio.on("disconnect")
+def handle_ws_disconnect():
+    _ws_users.pop(request.sid, None)
+
+
+@socketio.on("subscribe")
+def handle_ws_subscribe(data):
+    """订阅指定设备的实时数据流。data = {'dn': '...'}"""
+    sid = request.sid
+    sso_id = _ws_users.get(sid)
+    if not sso_id:
+        ws_emit("error", {"msg": "not_authenticated"})
+        ws_disconnect()
+        return
+    dn = (data.get("dn") or "").strip()
+    if not dn:
+        ws_emit("error", {"msg": "dn_required"})
+        return
+    dn_clean = _normalize_dn(dn)
+    if not _check_device_permission_for_user(sso_id, dn_clean):
+        ws_emit("error", {"msg": "forbidden"})
+        return
+    socketio.start_background_task(_relay_sse_to_ws, sid, dn_clean)
+    ws_emit("subscribed", {"dn": dn_clean})
+
+
+def _relay_sse_to_ws(sid: str, dn: str) -> None:
+    """后台 greenlet：从 bridge SSE 读取数据并转发给 WebSocket 客户端。"""
+    url = _bridge_url(f"/stream/{dn}")
+    try:
+        with requests.get(
+            url,
+            stream=True,
+            headers={"Accept": "text/event-stream", "Cache-Control": "no-cache"},
+            timeout=(BRIDGE_TIMEOUT_CONNECT, None),
+        ) as resp:
+            resp.raise_for_status()
+            event_name: str | None = None
+            data_lines: list[str] = []
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                # 如果客户端已断开，终止循环
+                if not socketio.server.manager.is_connected(sid, "/"):
+                    break
+                if raw_line is None:
+                    continue
+                if raw_line.startswith("event:"):
+                    event_name = raw_line[6:].strip()
+                    data_lines = []
+                elif raw_line.startswith("data:"):
+                    data_lines.append(raw_line[5:].strip())
+                elif raw_line == "" and event_name and data_lines:
+                    try:
+                        payload = json.loads("\n".join(data_lines))
+                        socketio.emit(event_name, payload, to=sid)
+                    except (json.JSONDecodeError, Exception):
+                        pass
+                    event_name = None
+                    data_lines = []
+    except Exception:
+        pass
+    # 通知客户端流已结束
+    try:
+        socketio.emit("stream_ended", {"dn": dn}, to=sid)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     web_port = int(os.getenv("WEB_PORT", "5000"))
     ssl_enabled = os.getenv("WEB_SSL_ENABLED", "0") not in ("0", "", "false", "False", "FALSE")
@@ -1046,6 +1185,7 @@ if __name__ == "__main__":
         else:
             print("[web] WEB_SSL_ENABLED is set but WEB_SSL_CERT/WEB_SSL_KEY missing or invalid; falling back to HTTP.")
 
-    print(f"[web] serving on port {web_port} (gevent)")
-    http_server = WSGIServer(("0.0.0.0", web_port), app, **ssl_args)
+    print(f"[web] serving on port {web_port} (gevent + websocket)")
+    from geventwebsocket.handler import WebSocketHandler
+    http_server = WSGIServer(("0.0.0.0", web_port), app, handler_class=WebSocketHandler, **ssl_args)
     http_server.serve_forever()

@@ -26,7 +26,7 @@ fi
 echo "[Web] Starting Main Dashboard on port $WEB_PORT..."
 exec gunicorn app:app \
     --bind 0.0.0.0:$WEB_PORT \
-    --worker-class gevent \
+    --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker \
     --workers $WORKERS \
     $SSL_ARGS \
     --access-logfile - \
