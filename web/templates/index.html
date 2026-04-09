@@ -35,6 +35,7 @@
                   <span id="user-name" class="fw-normal">--</span>
                   <span id="user-role" class="badge bg-secondary text-white" style="font-size: 0.7em;">User</span>
               </span>
+              {% if is_admin %}
               <a href="/console" class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" title="Device Console">
                   <i class="fas fa-terminal"></i> <span class="d-none d-sm-inline">Console</span>
               </a>
@@ -44,6 +45,7 @@
               <a href="/profile_editor" class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" title="Profile Editor">
                   <i class="fas fa-map-marked-alt"></i> <span class="d-none d-sm-inline">Profiles</span>
               </a>
+              {% endif %}
               <a href="/logout" class="btn btn-sm btn-outline-danger" title="Logout">
                   <i class="fas fa-sign-out-alt"></i>
               </a>

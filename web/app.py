@@ -535,7 +535,8 @@ def index() -> str:
         "index.html",
         bridge_api_base=BRIDGE_API_BASE_URL,
         allowed_dns=json.dumps(allowed_dns),
-        device_map=json.dumps(device_map)
+        device_map=json.dumps(device_map),
+        is_admin=(user == 'admin')
     )
 
 
