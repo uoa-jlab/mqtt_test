@@ -1,0 +1,1589 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Data Replay</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <style>
+      html, body { height: 100%; margin: 0; background: #f0f2f5; }
+      body { display: flex; flex-direction: column; }
+
+      /* ── Navbar ── */
+      .replay-navbar {
+        flex-shrink: 0;
+        background: #2c3e50; color: #fff;
+        padding: 0.45rem 1rem;
+        display: flex; align-items: center; gap: 0.75rem;
+      }
+      .replay-navbar a { color: #adb5bd; text-decoration: none; font-size: 0.85rem; }
+      .replay-navbar a:hover { color: #fff; }
+
+      /* ── Cards area ── */
+      #cards-area {
+        flex: 1;
+        display: grid;
+        gap: 1rem;
+        padding: 1rem;
+        overflow-y: auto;
+        grid-template-columns: 1fr;  /* updated by JS */
+        align-items: start;
+        /* Match index.html container width */
+        max-width: 1320px;
+        width: 100%;
+        margin-left: auto;
+        margin-right: auto;
+        box-sizing: border-box;
+      }
+      #cards-area.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+      /* ── Add-card button ── */
+      #add-card-wrapper {
+        display: flex; align-items: center; justify-content: center;
+        border: 2px dashed #dee2e6; border-radius: 0.75rem;
+        min-height: 120px; cursor: pointer;
+        background: #fff; transition: border-color 0.15s, background 0.15s;
+        color: #6c757d; font-size: 0.9rem; gap: 0.5rem;
+      }
+      #add-card-wrapper:hover { border-color: #0d6efd; background: #f0f6ff; color: #0d6efd; }
+      #add-card-wrapper.hidden { display: none; }
+
+      /* ── Replay Card ── */
+      .replay-card { }
+      .replay-card .card { border-radius: 0.75rem; }
+      .replay-card .card-body { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.85rem; }
+
+      /* Heatmap inside card */
+      .card-heatmap {
+        position: relative; overflow: hidden;
+        height: 240px; border-radius: 0.5rem;
+        background: #1a1a2e;
+      }
+      .card-heatmap .heatmap-placeholder {
+        position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: #6c757d; font-size: 0.9rem;
+        background: #f8f9fa; border-radius: 0.5rem;
+      }
+      .card-heatmap.has-3d { background: transparent; }
+      .pressure-surface-canvas { display: block; width: 100% !important; height: 100% !important; }
+
+      /* Compact playback bar — hover to reveal */
+      .card-playback {
+        border-top: 1px solid #dee2e6;
+        padding-top: 0.5rem;
+        margin-top: 0.25rem;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+      }
+      .replay-card:hover .card-playback,
+      .replay-card:focus-within .card-playback {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .card-timeline { width: 100%; accent-color: #0d6efd; }
+      .card-time-display {
+        font-size: 0.75rem; font-variant-numeric: tabular-nums;
+        color: #6c757d; white-space: nowrap; min-width: 80px;
+      }
+      .card-frame-display { font-size: 0.7rem; color: #adb5bd; }
+
+      /* File display */
+      .card-file-display {
+        font-size: 0.8rem; color: #495057;
+        word-break: break-all; min-height: 1.2em;
+        padding: 0.2rem 0.4rem; background: #f8f9fa;
+        border-radius: 4px; border: 1px solid #e9ecef;
+      }
+
+      /* ===== Finder Modal ===== */
+      .fb-overlay {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .fb-modal {
+        background: #fff; border-radius: 8px;
+        width: min(720px, 95vw); max-height: 80vh;
+        display: flex; flex-direction: column;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3); overflow: hidden;
+      }
+      .fb-modal-header {
+        display: flex; align-items: center;
+        padding: 0.5rem 1rem;
+        border-bottom: 1px solid #dee2e6;
+        background: #f8f9fa; gap: 0.5rem; flex-shrink: 0;
+      }
+      .fb-breadcrumb {
+        flex: 1; display: flex; align-items: center;
+        gap: 0.25rem; flex-wrap: wrap; font-size: 0.85rem; min-width: 0;
+      }
+      .fb-breadcrumb .fb-crumb { color: #0d6efd; cursor: pointer; }
+      .fb-breadcrumb .fb-crumb:hover { text-decoration: underline; }
+      .fb-breadcrumb .fb-sep { color: #6c757d; }
+      .fb-breadcrumb .fb-crumb-cur { color: #212529; font-weight: 600; }
+      .fb-close-btn {
+        background: none; border: none; font-size: 1.4rem; line-height: 1;
+        color: #6c757d; cursor: pointer; padding: 0 0.25rem; flex-shrink: 0;
+      }
+      .fb-close-btn:hover { color: #212529; }
+      .fb-modal-body { flex: 1 1 0; overflow-y: auto; min-height: 200px; }
+      .fb-list { list-style: none; margin: 0; padding: 0; }
+      .fb-item {
+        display: flex; align-items: center;
+        padding: 0.45rem 1rem; cursor: pointer;
+        border-bottom: 1px solid #f0f0f0;
+        user-select: none; gap: 0.6rem;
+      }
+      .fb-item:hover { background: #e9f5ff; }
+      .fb-item.fb-selected { background: #0d6efd; color: #fff; }
+      .fb-item.fb-selected .fb-item-size { color: rgba(255,255,255,0.75); }
+      .fb-item-icon { width: 1.1rem; text-align: center; font-size: 0.95rem; }
+      .fb-item-name { flex: 1; font-size: 0.9rem; word-break: break-all; }
+      .fb-item-size { font-size: 0.75rem; color: #6c757d; white-space: nowrap; }
+      .fb-spinner, .fb-empty {
+        display: flex; align-items: center; justify-content: center;
+        padding: 2rem; color: #6c757d; gap: 0.5rem; font-size: 0.9rem;
+      }
+      .fb-empty { font-style: italic; }
+      .fb-modal-footer {
+        display: flex; align-items: center;
+        padding: 0.5rem 1rem;
+        border-top: 1px solid #dee2e6;
+        background: #f8f9fa; gap: 0.5rem; flex-shrink: 0;
+      }
+      .fb-sel-name {
+        flex: 1; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; font-size: 0.8rem; color: #495057;
+      }
+    </style>
+  </head>
+  <body>
+
+    <!-- ── Navbar ── -->
+    <div class="replay-navbar">
+      <span class="fw-bold" style="font-size:1rem;">
+        <i class="fas fa-play-circle me-1"></i><span data-i18n="replay.title">Data Replay</span>
+      </span>
+      <a href="/"><i class="fas fa-home me-1"></i><span data-i18n="replay.nav.live">Live Monitor</span></a>
+      <a href="/downloads"><i class="fas fa-download me-1"></i><span data-i18n="replay.nav.files">Download</span></a>
+      <div class="btn-group btn-group-sm ms-auto" id="lang-switcher">
+        <button class="btn btn-sm btn-outline-light btn-lang" data-lang="ja" style="font-size:0.75rem;padding:0.1rem 0.4rem;">日本語</button>
+        <button class="btn btn-sm btn-outline-light btn-lang" data-lang="en" style="font-size:0.75rem;padding:0.1rem 0.4rem;">English</button>
+        <button class="btn btn-sm btn-outline-light btn-lang" data-lang="zh" style="font-size:0.75rem;padding:0.1rem 0.4rem;">中文</button>
+      </div>
+      <a href="/logout"><i class="fas fa-sign-out-alt me-1"></i><span data-i18n="replay.nav.logout">Logout</span></a>
+    </div>
+
+    <!-- ── Cards Grid ── -->
+    <div id="cards-area">
+      <!-- replay cards inserted here by JS -->
+      <div id="add-card-wrapper">
+        <i class="fas fa-plus-circle fa-lg"></i>
+        <span data-i18n="replay.add_card">Add Card</span>
+      </div>
+    </div>
+
+    <!-- ── Finder Modal (shared) ── -->
+    <div id="fb-overlay" class="fb-overlay" style="display:none;" role="dialog" aria-modal="true">
+      <div class="fb-modal" id="fb-modal">
+        <div class="fb-modal-header">
+          <nav id="fb-breadcrumb" class="fb-breadcrumb" aria-label="breadcrumb"></nav>
+          <button class="fb-close-btn" id="fb-close-btn" aria-label="Close">&times;</button>
+        </div>
+        <div class="fb-modal-body">
+          <ul id="fb-list" class="fb-list" role="listbox"></ul>
+        </div>
+        <div class="fb-modal-footer">
+          <span id="fb-sel-name" class="fb-sel-name"></span>
+          <button id="fb-open-btn" class="btn btn-sm btn-primary" disabled data-i18n="replay.fb_open">Open</button>
+          <button id="fb-cancel-btn" class="btn btn-sm btn-outline-secondary" data-i18n="replay.fb_cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Three.js ── -->
+    <script type="module">
+      import * as THREE from "{{ url_for('static', filename='vendor/three/three.module.js') }}";
+      import { OrbitControls } from "{{ url_for('static', filename='vendor/three/OrbitControls.js') }}";
+      window.THREE = THREE;
+      window.OrbitControls = OrbitControls;
+      window.__three_ready = true;
+      window.dispatchEvent(new Event("three-ready"));
+    </script>
+
+    <script>
+    (function () {
+      'use strict';
+
+      // ============================================================
+      // i18n
+      // ============================================================
+      const TRANSLATIONS = {
+        zh: {
+          "replay.title":              "数据重放",
+          "replay.nav.live":           "实时监控",
+          "replay.nav.files":          "文件下载",
+          "replay.nav.logout":         "登出",
+          "replay.add_card":           "新增卡片",
+          "replay.browse_btn":         "选择文件",
+          "replay.no_file_selected":   "未选择文件",
+          "replay.load_btn":           "载入数据",
+          "replay.loading":            "载入中...",
+          "replay.no_data":            "文件中无数据",
+          "replay.load_failed":        "载入失败",
+          "replay.loaded":             "已载入 {n} 帧",
+          "replay.placeholder":        "请选择文件后点击「载入」",
+          "replay.pressure_range":     "压力范围",
+          "replay.speed":              "速度",
+          "replay.btn.first":          "跳至开始",
+          "replay.btn.prev":           "上一帧",
+          "replay.btn.play":           "播放",
+          "replay.btn.pause":          "暂停",
+          "replay.btn.next":           "下一帧",
+          "replay.btn.last":           "跳至末尾",
+          "replay.fb_title":           "选择文件",
+          "replay.fb_open":            "开启",
+          "replay.fb_cancel":          "取消",
+          "replay.fb_empty":           "空目录",
+          "replay.fb_error":           "读取失败",
+          "controls.layout":           "布局",
+          "controls.profile":          "显示模式",
+          "controls.profile_none":     "-- 无 (原始模式) --",
+          "display.2d":                "2D",
+          "display.3d":                "3D",
+          "display.p_min":             "最小",
+          "display.p_max":             "最大",
+          "display.dot_size":          "点大小",
+          "replay.no_layout":          "请选择布局",
+          "overview.gyro":             "陀螺仪 (°/s)",
+          "overview.acc":              "加速度 (m/s²)",
+          "overview.cop":              "压力中心 (COP)",
+          "overview.cop_x":            "X 坐标",
+          "overview.cop_y":            "Y 坐标",
+          "overview.cop_empty":        "载入数据后显示",
+          "replay.remove_card":        "移除卡片",
+          "replay.refresh_tip":        "刷新列表",
+        },
+        ja: {
+          "replay.title":              "データ再生",
+          "replay.nav.live":           "リアルタイム監視",
+          "replay.nav.files":          "ファイルダウンロード",
+          "replay.nav.logout":         "ログアウト",
+          "replay.add_card":           "カードを追加",
+          "replay.browse_btn":         "ファイルを選択",
+          "replay.no_file_selected":   "ファイル未選択",
+          "replay.load_btn":           "データ読込",
+          "replay.loading":            "読み込み中...",
+          "replay.no_data":            "データなし",
+          "replay.load_failed":        "読込失敗",
+          "replay.loaded":             "{n} フレームを読み込みました",
+          "replay.placeholder":        "ファイルを選択して「読込」をクリック",
+          "replay.pressure_range":     "圧力範囲",
+          "replay.speed":              "速度",
+          "replay.btn.first":          "先頭へ",
+          "replay.btn.prev":           "前のフレーム",
+          "replay.btn.play":           "再生",
+          "replay.btn.pause":          "一時停止",
+          "replay.btn.next":           "次のフレーム",
+          "replay.btn.last":           "末尾へ",
+          "replay.fb_title":           "ファイルを選択",
+          "replay.fb_open":            "開く",
+          "replay.fb_cancel":          "キャンセル",
+          "replay.fb_empty":           "空のフォルダ",
+          "replay.fb_error":           "読み込み失敗",
+          "controls.layout":           "レイアウト",
+          "controls.profile":          "プロファイル",
+          "controls.profile_none":     "-- なし (標準モード) --",
+          "display.2d":                "2D",
+          "display.3d":                "3D",
+          "display.p_min":             "最小",
+          "display.p_max":             "最大",
+          "display.dot_size":          "ドットサイズ",
+          "replay.no_layout":          "レイアウトを選択してください",
+          "overview.gyro":             "ジャイロ (°/s)",
+          "overview.acc":              "加速度 (m/s²)",
+          "overview.cop":              "圧力中心 (COP)",
+          "overview.cop_x":            "X 座標",
+          "overview.cop_y":            "Y 座標",
+          "overview.cop_empty":        "データ読込後に表示",
+          "replay.remove_card":        "カードを削除",
+          "replay.refresh_tip":        "リストを更新",
+        },
+        en: {
+          "replay.title":              "Data Replay",
+          "replay.nav.live":           "Live Monitor",
+          "replay.nav.files":          "Download",
+          "replay.nav.logout":         "Logout",
+          "replay.add_card":           "Add Card",
+          "replay.browse_btn":         "Browse Files",
+          "replay.no_file_selected":   "No file selected",
+          "replay.load_btn":           "Load Data",
+          "replay.loading":            "Loading...",
+          "replay.no_data":            "No data in file",
+          "replay.load_failed":        "Load failed",
+          "replay.loaded":             "Loaded {n} frames",
+          "replay.placeholder":        "Select a file and click Load",
+          "replay.pressure_range":     "Pressure Range",
+          "replay.speed":              "Speed",
+          "replay.btn.first":          "First frame",
+          "replay.btn.prev":           "Previous frame",
+          "replay.btn.play":           "Play",
+          "replay.btn.pause":          "Pause",
+          "replay.btn.next":           "Next frame",
+          "replay.btn.last":           "Last frame",
+          "replay.fb_title":           "Select File",
+          "replay.fb_open":            "Open",
+          "replay.fb_cancel":          "Cancel",
+          "replay.fb_empty":           "Empty folder",
+          "replay.fb_error":           "Load failed",
+          "controls.layout":           "Layout",
+          "controls.profile":          "Profile",
+          "controls.profile_none":     "-- None (Standard) --",
+          "display.2d":                "2D",
+          "display.3d":                "3D",
+          "display.p_min":             "Min",
+          "display.p_max":             "Max",
+          "display.dot_size":          "Dot Size",
+          "replay.no_layout":          "Please select a layout",
+          "overview.gyro":             "Gyro (°/s)",
+          "overview.acc":              "Acc (m/s²)",
+          "overview.cop":              "Center of Pressure (COP)",
+          "overview.cop_x":            "X coordinate",
+          "overview.cop_y":            "Y coordinate",
+          "overview.cop_empty":        "Load data to display",
+          "replay.remove_card":        "Remove card",
+          "replay.refresh_tip":        "Refresh list",
+        },
+      };
+
+      const LANG_META = { zh: 'zh-CN', ja: 'ja-JP', en: 'en' };
+      let currentLang = localStorage.getItem('uiLanguage') || 'ja';
+      if (!TRANSLATIONS[currentLang]) currentLang = 'ja';
+
+      function t(key) {
+        return (TRANSLATIONS[currentLang] || {})[key]
+            || (TRANSLATIONS['ja'] || {})[key]
+            || key;
+      }
+
+      function applyLanguageToEl(root) {
+        root.querySelectorAll('[data-i18n]').forEach(el => {
+          const v = t(el.dataset.i18n); if (v) el.textContent = v;
+        });
+        root.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+          const v = t(el.dataset.i18nPlaceholder); if (v) el.placeholder = v;
+        });
+        root.querySelectorAll('[data-i18n-title]').forEach(el => {
+          const v = t(el.dataset.i18nTitle); if (v) el.title = v;
+        });
+      }
+
+      function applyLanguage() {
+        document.documentElement.lang = LANG_META[currentLang] || 'ja';
+        document.title = t('replay.title');
+        applyLanguageToEl(document.body);
+        document.querySelectorAll('.btn-lang').forEach(b => {
+          b.classList.toggle('active', b.dataset.lang === currentLang);
+        });
+        cards.forEach(card => updatePlayBtnTitle(card));
+      }
+
+      function setLanguage(lang) {
+        if (!TRANSLATIONS[lang]) return;
+        currentLang = lang;
+        localStorage.setItem('uiLanguage', lang);
+        applyLanguage();
+      }
+
+      document.querySelectorAll('.btn-lang').forEach(btn => {
+        btn.addEventListener('click', () => setLanguage(btn.dataset.lang));
+      });
+
+      // ============================================================
+      // 色彩 LUT
+      // ============================================================
+      const COLOR_GREEN  = [46,  204, 113];
+      const COLOR_YELLOW = [241, 196,  15];
+      const COLOR_ORANGE = [243, 156,  18];
+      const COLOR_RED    = [231,  76,  60];
+      const GRADIENT_STOPS = [
+        { stop: 0,    color: COLOR_GREEN  },
+        { stop: 0.33, color: COLOR_YELLOW },
+        { stop: 0.66, color: COLOR_ORANGE },
+        { stop: 1,    color: COLOR_RED    }
+      ];
+      const SURFACE_LUT_SIZE        = 256;
+      const SURFACE_SUBDIV          = 8;
+      const SURFACE_HEIGHT_FRACTION = 0.35;
+      const SURFACE_MISSING_RGB     = [0.87, 0.89, 0.90];
+      const PROFILE_PLANE_SIZE      = 4.0;
+
+      function buildGradientLut(stops, size) {
+        const lut = new Float32Array(size * 3);
+        if (!Array.isArray(stops) || stops.length < 2 || size <= 1) return lut;
+        for (let i = 0; i < size; i++) {
+          const ratio = i / (size - 1);
+          let r = 0, g = 0, b = 0;
+          for (let s = 1; s < stops.length; s++) {
+            if (ratio <= stops[s].stop) {
+              const prev = stops[s-1], next = stops[s];
+              const tt = (ratio - prev.stop) / (next.stop - prev.stop || 1);
+              r = prev.color[0] + (next.color[0] - prev.color[0]) * tt;
+              g = prev.color[1] + (next.color[1] - prev.color[1]) * tt;
+              b = prev.color[2] + (next.color[2] - prev.color[2]) * tt;
+              break;
+            }
+          }
+          lut[i*3] = r/255; lut[i*3+1] = g/255; lut[i*3+2] = b/255;
+        }
+        return lut;
+      }
+      const SURFACE_GRADIENT_LUT = buildGradientLut(GRADIENT_STOPS, SURFACE_LUT_SIZE);
+
+      function lutToRgb(lutIdx) {
+        const base = lutIdx * 3;
+        return `rgb(${Math.round(SURFACE_GRADIENT_LUT[base]*255)},${Math.round(SURFACE_GRADIENT_LUT[base+1]*255)},${Math.round(SURFACE_GRADIENT_LUT[base+2]*255)})`;
+      }
+
+      // ============================================================
+      // 工具函數
+      // ============================================================
+      function computeFactorPairs(sn) {
+        if (!Number.isInteger(sn) || sn <= 0) return [];
+        const basePairs = [];
+        const limit = Math.floor(Math.sqrt(sn));
+        for (let i = 1; i <= limit; i++) {
+          if (sn % i === 0) basePairs.push([i, sn / i]);
+        }
+        const pairs = [];
+        basePairs.forEach(([rows, cols]) => {
+          if (rows <= 16 && cols <= 16) pairs.push([rows, cols]);
+          if (rows !== cols && cols <= 16 && rows <= 16) pairs.push([cols, rows]);
+        });
+        pairs.sort((a, b) => {
+          const da = Math.abs(a[0]-a[1]), db = Math.abs(b[0]-b[1]);
+          return da !== db ? da - db : a[0] - b[0];
+        });
+        return pairs;
+      }
+
+      function parseLayoutKey(key) {
+        if (!key) return null;
+        const [rows, cols] = key.split('x').map(Number);
+        if (!Number.isInteger(rows) || !Number.isInteger(cols)) return null;
+        return [rows, cols];
+      }
+
+      function applyMirroring(values, rows, cols, mirrorRows, mirrorCols) {
+        if (!rows || !cols) return values.slice();
+        const result = [];
+        for (let dr = 0; dr < rows; dr++) {
+          const sr = mirrorRows ? rows - 1 - dr : dr;
+          const rowV = values.slice(sr * cols, sr * cols + cols);
+          if (mirrorCols) rowV.reverse();
+          result.push(...rowV);
+        }
+        return result;
+      }
+
+      // ============================================================
+      // Three.js — 純函數（card 參數化）
+      // ============================================================
+      function threeIsAvailable() {
+        return Boolean(window.THREE && window.THREE.WebGLRenderer && window.OrbitControls);
+      }
+
+      function buildSurfaceGeometry(rows, cols, subdiv) {
+        const safeRows = Math.max(1, rows);
+        const safeCols = Math.max(1, cols);
+        const segments = Math.max(0, Number.isInteger(subdiv) ? subdiv : 0) + 1;
+        const fineCols = (safeCols - 1) * segments + 1;
+        const fineRows = (safeRows - 1) * segments + 1;
+        const fineW   = Math.max(0, fineCols - 1);
+        const fineH   = Math.max(0, fineRows - 1);
+        const sensorW = Math.max(0, safeCols - 1);
+        const sensorH = Math.max(0, safeRows - 1);
+        const step    = 1 / segments;
+        const pointCount = fineCols * fineRows;
+        const positions    = new Float32Array(pointCount * 3);
+        const colors       = new Float32Array(pointCount * 3);
+        const sampleIndices = new Int32Array(pointCount * 4);
+        const sampleWeights = new Float32Array(pointCount * 4);
+        const halfX = sensorW / 2, halfZ = sensorH / 2;
+        let ptr = 0;
+        for (let fy = 0; fy < fineRows; fy++) {
+          const sy = fineH === 0 ? 0 : (fy / fineH) * sensorH;
+          const y0 = Math.floor(sy), y1 = Math.min(safeRows - 1, y0 + 1), ty = sy - y0;
+          for (let fx = 0; fx < fineCols; fx++) {
+            const sx = fineW === 0 ? 0 : (fx / fineW) * sensorW;
+            const x0 = Math.floor(sx), x1 = Math.min(safeCols - 1, x0 + 1), tx = sx - x0;
+            const p = (fy * fineCols + fx) * 3;
+            positions[p] = fx * step - halfX; positions[p+1] = 0; positions[p+2] = fy * step - halfZ;
+            const w00=(1-tx)*(1-ty), w10=tx*(1-ty), w01=(1-tx)*ty, w11=tx*ty;
+            sampleIndices[ptr]=y0*safeCols+x0; sampleWeights[ptr]=w00; ptr++;
+            sampleIndices[ptr]=y0*safeCols+x1; sampleWeights[ptr]=w10; ptr++;
+            sampleIndices[ptr]=y1*safeCols+x0; sampleWeights[ptr]=w01; ptr++;
+            sampleIndices[ptr]=y1*safeCols+x1; sampleWeights[ptr]=w11; ptr++;
+            const c = SURFACE_MISSING_RGB, cb = (fy*fineCols+fx)*3;
+            colors[cb]=c[0]; colors[cb+1]=c[1]; colors[cb+2]=c[2];
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+        geometry.userData = { rows: safeRows, cols: safeCols, fineRows, fineCols, step };
+        return { geometry, sampleIndices, sampleWeights };
+      }
+
+      function ensureThreeSurface(card, rows, cols) {
+        if (!threeIsAvailable()) return null;
+        const safeRows = Math.max(1, rows), safeCols = Math.max(1, cols);
+        if (!card.three) {
+          const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+          renderer.setPixelRatio(window.devicePixelRatio || 1);
+          renderer.domElement.className = 'pressure-surface-canvas';
+          const scene  = new THREE.Scene();
+          const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+          const controls = new window.OrbitControls(camera, renderer.domElement);
+          controls.enableDamping = false; controls.target.set(0,0,0); controls.update();
+          const built    = buildSurfaceGeometry(safeRows, safeCols, SURFACE_SUBDIV);
+          const material = new THREE.PointsMaterial({
+            size: Math.max(0.04, built.geometry.userData.step * 1.8),
+            sizeAttenuation: true, vertexColors: true, transparent: true, opacity: 0.95
+          });
+          const points = new THREE.Points(built.geometry, material);
+          scene.add(points);
+          const span = Math.max(safeCols-1, safeRows-1, 1);
+          camera.position.set(0, span*0.9, span*1.4); camera.lookAt(0,0,0);
+          controls.minDistance = span*0.6; controls.maxDistance = span*8; controls.update();
+          const three = {
+            renderer, scene, camera, controls, points,
+            geometry: built.geometry, sampleIndices: built.sampleIndices, sampleWeights: built.sampleWeights,
+            rows: safeRows, cols: safeCols, lastWidth: 0, lastHeight: 0
+          };
+          controls.addEventListener('change', () => {
+            if (three.lastWidth > 0) renderer.render(scene, camera);
+          });
+          card.three = three;
+          return three;
+        }
+        const three = card.three;
+        if (three.rows !== safeRows || three.cols !== safeCols) {
+          if (three.geometry) three.geometry.dispose();
+          const built = buildSurfaceGeometry(safeRows, safeCols, SURFACE_SUBDIV);
+          three.geometry = built.geometry; three.sampleIndices = built.sampleIndices; three.sampleWeights = built.sampleWeights;
+          three.rows = safeRows; three.cols = safeCols; three.points.geometry = three.geometry;
+          const span = Math.max(safeCols-1, safeRows-1, 1);
+          three.camera.position.set(0, span*0.9, span*1.4); three.camera.lookAt(0,0,0);
+          three.controls.minDistance = span*0.6; three.controls.maxDistance = span*8; three.controls.update();
+          three.points.material.size = Math.max(0.04, three.geometry.userData.step * 1.8);
+        }
+        return three;
+      }
+
+      function resizeThreeSurface(card) {
+        if (!card.three) return;
+        const container = card.heatmapContainer;
+        const width = container.clientWidth, height = container.clientHeight;
+        if (!width || !height) return;
+        if (width === card.three.lastWidth && height === card.three.lastHeight) return;
+        card.three.lastWidth = width; card.three.lastHeight = height;
+        card.three.renderer.setSize(width, height, false);
+        card.three.camera.aspect = width / height; card.three.camera.updateProjectionMatrix();
+      }
+
+      function updateThreeSurface(card, displayValues, rows, cols, range) {
+        const three = card.three; if (!three) return;
+        const min = Number.isFinite(range?.min) ? range.min : 0;
+        const max = Number.isFinite(range?.max) ? range.max : min;
+        const rangeSpan = max - min;
+        const span = Math.max(cols-1, rows-1, 1);
+        const heightScale = rangeSpan > 0 ? (span * SURFACE_HEIGHT_FRACTION) / rangeSpan : 0;
+        const posAttr = three.geometry.getAttribute('position');
+        const colAttr = three.geometry.getAttribute('color');
+        const pos = posAttr.array, col = colAttr.array;
+        const indices = three.sampleIndices, weights = three.sampleWeights;
+        const pointCount = indices.length / 4;
+        const lut = SURFACE_GRADIENT_LUT, missing = SURFACE_MISSING_RGB;
+        for (let i = 0; i < pointCount; i++) {
+          const base4 = i * 4;
+          let sum = 0, wSum = 0;
+          for (let k = 0; k < 4; k++) {
+            const idx = indices[base4+k], w = weights[base4+k];
+            const v = displayValues[idx];
+            if (Number.isFinite(v) && w > 0) { sum += v*w; wSum += w; }
+          }
+          const value = wSum > 0 ? sum/wSum : NaN;
+          const posBase = i*3, colBase = i*3;
+          if (!Number.isFinite(value)) {
+            pos[posBase+1] = 0; col[colBase]=missing[0]; col[colBase+1]=missing[1]; col[colBase+2]=missing[2];
+            continue;
+          }
+          const clamped = Math.min(max, Math.max(min, value));
+          pos[posBase+1] = heightScale > 0 ? (clamped-min)*heightScale : 0;
+          const ratio = rangeSpan>0 ? (clamped-min)/rangeSpan : 0;
+          const lutIdx = Math.max(0, Math.min(SURFACE_LUT_SIZE-1, Math.round(ratio*(SURFACE_LUT_SIZE-1))));
+          const lb = lutIdx*3; col[colBase]=lut[lb]; col[colBase+1]=lut[lb+1]; col[colBase+2]=lut[lb+2];
+        }
+        posAttr.needsUpdate = true; colAttr.needsUpdate = true;
+      }
+
+      // ── Profile 2D ──
+      function setupProfile2d(card) {
+        const container = card.heatmapContainer;
+        container.innerHTML = '';
+        container.style.display = 'flex';
+        container.style.alignItems = 'center';
+        container.style.justifyContent = 'center';
+        container.style.overflow = 'hidden';
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'position:relative;display:inline-block;line-height:0;';
+        const img = document.createElement('img');
+        img.src = (card.profile.background && card.profile.background.imageData) || '';
+        img.style.cssText = 'display:block;';
+        const canvas = document.createElement('canvas');
+        canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+        wrapper.appendChild(img); wrapper.appendChild(canvas); container.appendChild(wrapper);
+        card.profileWrapper = wrapper; card.profileImg = img; card.profileCanvas = canvas;
+        function fitImage() {
+          if (!img.naturalWidth || !img.naturalHeight) return;
+          const cw = container.clientWidth || 400, ch = container.clientHeight || 240;
+          const ratio = img.naturalWidth / img.naturalHeight;
+          let dw = cw, dh = cw / ratio;
+          if (dh > ch) { dh = ch; dw = ch * ratio; }
+          img.style.width = `${Math.round(dw)}px`; img.style.height = `${Math.round(dh)}px`;
+        }
+        img.addEventListener('load', fitImage);
+        if (img.complete && img.naturalWidth) fitImage();
+        card._profileFitImage = fitImage;
+      }
+
+      function renderProfile2d(card, pressureValues, range) {
+        if (!card.profileCanvas || !card.profileImg) return;
+        const img = card.profileImg, canvas = card.profileCanvas;
+        const w = img.clientWidth, h = img.clientHeight;
+        if (!w || !h) return;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = w*dpr; canvas.height = h*dpr;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+        const min = Number.isFinite(range?.min) ? range.min : 0;
+        const max = Number.isFinite(range?.max) ? range.max : min;
+        const span = max - min;
+        const sensors = card.profile.sensors || [];
+        const dotSizeMult = (card.profile.display && card.profile.display.dotSize) || 1;
+        const radius = Math.max(4, Math.min(w,h) * 0.025 * dotSizeMult);
+        sensors.forEach(s => {
+          if (!s.enabled) return;
+          const value = pressureValues[s.index]; if (!Number.isFinite(value)) return;
+          const px = s.x*w, py = s.y*h;
+          const ratio = span>0 ? Math.max(0, Math.min(1, (value-min)/span)) : 0;
+          const lutIdx = Math.round(ratio*(SURFACE_LUT_SIZE-1));
+          const color = lutToRgb(lutIdx);
+          ctx.beginPath(); ctx.arc(px, py, radius, 0, Math.PI*2);
+          ctx.fillStyle = color; ctx.globalAlpha = 0.85; ctx.fill();
+          ctx.globalAlpha = 1; ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+        });
+      }
+
+      function buildProfileGeometry(sensors, aspectRatio) {
+        const ar = aspectRatio > 0 ? aspectRatio : 1;
+        const enabledSensors = sensors.filter(s => s.enabled);
+        const pointCount = enabledSensors.length;
+        if (pointCount === 0) {
+          const g = new THREE.BufferGeometry();
+          g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+          g.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(0), 3));
+          g.userData = { sensorMap: [] }; return g;
+        }
+        const positions = new Float32Array(pointCount*3), colors = new Float32Array(pointCount*3), sensorMap = [];
+        const pw = PROFILE_PLANE_SIZE, ph = PROFILE_PLANE_SIZE/ar;
+        enabledSensors.forEach((s, i) => {
+          const xw=(s.x-0.5)*pw, zw=(s.y-0.5)*ph;
+          positions[i*3]=xw; positions[i*3+1]=0; positions[i*3+2]=zw;
+          colors[i*3]=SURFACE_MISSING_RGB[0]; colors[i*3+1]=SURFACE_MISSING_RGB[1]; colors[i*3+2]=SURFACE_MISSING_RGB[2];
+          sensorMap.push({ index: s.index, xWorld: xw, zWorld: zw });
+        });
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+        geo.userData = { sensorMap, profileMode: true };
+        return geo;
+      }
+
+      function setupProfile3d(card) {
+        if (!threeIsAvailable()) return;
+        const pr = card.profile;
+        const ar = (pr.background && pr.background.aspectRatio > 0) ? pr.background.aspectRatio : 1;
+        const pw = PROFILE_PLANE_SIZE, ph = PROFILE_PLANE_SIZE/ar;
+        cleanupThree(card);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        renderer.domElement.className = 'pressure-surface-canvas';
+        const scene  = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+        const controls = new window.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = false; controls.target.set(0,0,0);
+        let texture = null, bgMesh = null;
+        if (pr.background && pr.background.imageData) {
+          const planeGeo = new THREE.PlaneGeometry(pw, ph); planeGeo.rotateX(-Math.PI/2);
+          texture = new THREE.TextureLoader().load(pr.background.imageData);
+          bgMesh = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }));
+          bgMesh.position.y = -0.01; scene.add(bgMesh);
+        }
+        card.profileThreeExtra = { bgMesh, texture };
+        const geo = buildProfileGeometry(pr.sensors || [], ar);
+        const basePointSize = Math.max(0.06, Math.min(pw,ph)*0.025);
+        const dotSizeMult   = (pr.display && pr.display.dotSize) || 1;
+        const material = new THREE.PointsMaterial({
+          size: basePointSize*dotSizeMult, sizeAttenuation: true,
+          vertexColors: true, transparent: true, opacity: 0.95
+        });
+        const points = new THREE.Points(geo, material); scene.add(points);
+        const span = Math.max(pw,ph)*0.5;
+        camera.position.set(0, span*1.8, span*2.8); camera.lookAt(0,0,0);
+        controls.minDistance=span*1.2; controls.maxDistance=span*16; controls.update();
+        const three = {
+          renderer, scene, camera, controls, points,
+          geometry: geo, basePointSize,
+          sampleIndices: null, sampleWeights: null,
+          rows: 1, cols: (pr.sensors||[]).filter(s=>s.enabled).length,
+          lastWidth: 0, lastHeight: 0, userData: { profileMode: true }
+        };
+        controls.addEventListener('change', () => { if (three.lastWidth>0) renderer.render(scene, camera); });
+        card.three = three;
+      }
+
+      function updateProfileThreeSurface(card, pressureValues, range) {
+        const three = card.three; if (!three || !three.geometry) return;
+        const sensorMap = three.geometry.userData.sensorMap || []; if (!sensorMap.length) return;
+        const min = Number.isFinite(range?.min) ? range.min : 0;
+        const max = Number.isFinite(range?.max) ? range.max : min;
+        const rangeSpan = max - min;
+        const ar = (card.profile.background && card.profile.background.aspectRatio>0)
+                   ? card.profile.background.aspectRatio : 1;
+        const ph = PROFILE_PLANE_SIZE/ar;
+        const heightScale = rangeSpan>0 ? (Math.max(PROFILE_PLANE_SIZE,ph)*SURFACE_HEIGHT_FRACTION)/rangeSpan : 0;
+        const posAttr = three.geometry.getAttribute('position');
+        const colAttr = three.geometry.getAttribute('color');
+        const lut = SURFACE_GRADIENT_LUT, missing = SURFACE_MISSING_RGB;
+        sensorMap.forEach((sm, i) => {
+          const value = pressureValues[sm.index];
+          if (!Number.isFinite(value)) { posAttr.setY(i,0); colAttr.setXYZ(i,missing[0],missing[1],missing[2]); return; }
+          const clamped = Math.max(min, Math.min(max, value));
+          posAttr.setY(i, heightScale>0 ? (clamped-min)*heightScale : 0);
+          const ratio  = rangeSpan>0 ? (clamped-min)/rangeSpan : 0;
+          const lutIdx = Math.max(0, Math.min(SURFACE_LUT_SIZE-1, Math.round(ratio*(SURFACE_LUT_SIZE-1))));
+          const lb = lutIdx*3; colAttr.setXYZ(i, lut[lb], lut[lb+1], lut[lb+2]);
+        });
+        posAttr.needsUpdate = true; colAttr.needsUpdate = true;
+      }
+
+      function cleanupThree(card) {
+        if (card.three) {
+          if (card.three.points) card.three.scene.remove(card.three.points);
+          if (card.three.geometry) card.three.geometry.dispose();
+          if (card.three.points && card.three.points.material) card.three.points.material.dispose();
+          if (card.three.controls) card.three.controls.dispose();
+          card.three.renderer.dispose();
+          card.three = null;
+        }
+        if (card.profileThreeExtra) {
+          const { bgMesh, texture } = card.profileThreeExtra;
+          if (bgMesh && bgMesh.geometry) bgMesh.geometry.dispose();
+          if (bgMesh && bgMesh.material) bgMesh.material.dispose();
+          if (texture) texture.dispose();
+          card.profileThreeExtra = null;
+        }
+      }
+
+      function cleanupProfile2d(card) {
+        if (card.profileWrapper) {
+          card.profileWrapper.remove();
+          card.profileWrapper = null; card.profileCanvas = null; card.profileImg = null; card._profileFitImage = null;
+          card.heatmapContainer.style.display = '';
+          card.heatmapContainer.style.alignItems = '';
+          card.heatmapContainer.style.justifyContent = '';
+          card.heatmapContainer.style.overflow = '';
+        }
+      }
+
+      // ── Metrics ──
+      function updateMetrics(card, frame, displayValues, rows, cols) {
+        if (frame.gyro && frame.gyro.length >= 3) {
+          card.gyroX.textContent = frame.gyro[0].toFixed(2);
+          card.gyroY.textContent = frame.gyro[1].toFixed(2);
+          card.gyroZ.textContent = frame.gyro[2].toFixed(2);
+        } else { card.gyroX.textContent='--'; card.gyroY.textContent='--'; card.gyroZ.textContent='--'; }
+        if (frame.acc && frame.acc.length >= 3) {
+          card.accX.textContent = frame.acc[0].toFixed(2);
+          card.accY.textContent = frame.acc[1].toFixed(2);
+          card.accZ.textContent = frame.acc[2].toFixed(2);
+        } else { card.accX.textContent='--'; card.accY.textContent='--'; card.accZ.textContent='--'; }
+        const board = card.copBoard, dot = card.copDot;
+        if (!displayValues || !rows || !cols) {
+          board.classList.remove('has-data'); card.copX.textContent='--'; card.copY.textContent='--'; return;
+        }
+        const OFFSET = 250;
+        let total=0, sumX=0, sumY=0;
+        displayValues.forEach((v, i) => {
+          if (!Number.isFinite(v)) return;
+          const adj = v - OFFSET; if (adj<=0) return;
+          const r=Math.floor(i/cols), c=i%cols;
+          total+=adj; sumX+=adj*c; sumY+=adj*r;
+        });
+        if (total <= 0) {
+          board.classList.remove('has-data'); card.copX.textContent='--'; card.copY.textContent='--'; return;
+        }
+        const copX=sumX/total, copY=sumY/total;
+        card.copX.textContent = copX.toFixed(2); card.copY.textContent = copY.toFixed(2);
+        const xRatio = Math.min(1,Math.max(0, copX/Math.max(cols-1,1)));
+        const yRatio = Math.min(1,Math.max(0, copY/Math.max(rows-1,1)));
+        board.classList.add('has-data');
+        dot.style.left = `${xRatio*100}%`; dot.style.top = `${yRatio*100}%`;
+      }
+
+      // ── Pressure range ──
+      function resolveRange(card, dataMin, dataMax) {
+        const rawMin = card.pminInput.value.trim(), rawMax = card.pmaxInput.value.trim();
+        const cMin = rawMin!=='' ? Number(rawMin) : null, cMax = rawMax!=='' ? Number(rawMax) : null;
+        if (Number.isFinite(cMin) && Number.isFinite(cMax) && cMin<cMax) return { min: cMin, max: cMax };
+        if (card.profile) {
+          const pd = card.profile.display || {};
+          if (Number.isFinite(pd.pressureMin) && Number.isFinite(pd.pressureMax) && pd.pressureMin<pd.pressureMax)
+            return { min: pd.pressureMin, max: pd.pressureMax };
+        }
+        if (Number.isFinite(dataMin) && Number.isFinite(dataMax)) return { min: dataMin, max: dataMax };
+        return { min: 300, max: 1000 };
+      }
+
+      // ── Render frame ──
+      function renderFrame(card, frameIdx) {
+        if (!card.frames.length) return;
+        const frame = card.frames[Math.max(0, Math.min(frameIdx, card.frames.length-1))];
+        const pressureValues = frame.p || [];
+        const validValues = pressureValues.filter(v => Number.isFinite(v));
+        const dataMin = validValues.length ? Math.min(...validValues) : null;
+        const dataMax = validValues.length ? Math.max(...validValues) : null;
+        const range = resolveRange(card, dataMin, dataMax);
+        const container = card.heatmapContainer;
+
+        if (card.profile) {
+          const pr = card.profile, pd = pr.display || {};
+          let effectiveRange = range;
+          if (Number.isFinite(pd.pressureMin) && Number.isFinite(pd.pressureMax) && pd.pressureMin<pd.pressureMax)
+            effectiveRange = { min: pd.pressureMin, max: pd.pressureMax };
+          const mode = pd.mode || '2d';
+          if (mode === '2d') {
+            if (!card.profileCanvas) setupProfile2d(card);
+            renderProfile2d(card, pressureValues, effectiveRange);
+          } else {
+            if (!threeIsAvailable()) {
+              container.innerHTML = '<div class="heatmap-placeholder">3D Not Loaded</div>';
+              updateMetrics(card, frame, null, 0, 0); return;
+            }
+            if (!card.three || !card.three.userData || !card.three.userData.profileMode) setupProfile3d(card);
+            const three = card.three; if (!three) return;
+            if (three.renderer.domElement.parentElement !== container) {
+              container.innerHTML = ''; container.appendChild(three.renderer.domElement);
+            }
+            container.classList.add('has-3d');
+            resizeThreeSurface(card);
+            // 每幀同步點大小（使 profileDotSize 滑桿即時生效）
+            if (three.basePointSize && three.points) {
+              const dotMult = (card.profile.display && Number.isFinite(card.profile.display.dotSize))
+                ? card.profile.display.dotSize : 1;
+              three.points.material.size = three.basePointSize * dotMult;
+            }
+            updateProfileThreeSurface(card, pressureValues, effectiveRange);
+            three.controls.update(); three.renderer.render(three.scene, three.camera);
+          }
+          updateMetrics(card, frame, null, 0, 0);
+          return;
+        }
+
+        // 標準 grid 模式
+        if (!threeIsAvailable()) {
+          container.innerHTML = '<div class="heatmap-placeholder">3D Not Loaded</div>';
+          updateMetrics(card, frame, null, 0, 0); return;
+        }
+        const layout = parseLayoutKey(card.selectedLayoutKey);
+        if (!layout) {
+          container.innerHTML = `<div class="heatmap-placeholder text-warning">${t('replay.no_layout')}</div>`;
+          updateMetrics(card, frame, null, 0, 0); return;
+        }
+        const [rows, cols] = layout;
+        const totalCells = rows*cols;
+        const values = pressureValues.slice(0, totalCells);
+        while (values.length < totalCells) values.push(NaN);
+        const displayValues = applyMirroring(values, rows, cols, false, false);
+        const three = ensureThreeSurface(card, rows, cols);
+        if (!three) return;
+        if (three.renderer.domElement.parentElement !== container) {
+          container.innerHTML = ''; container.appendChild(three.renderer.domElement);
+        }
+        container.classList.add('has-3d');
+        resizeThreeSurface(card);
+        updateThreeSurface(card, displayValues, rows, cols, range);
+        three.controls.update(); three.renderer.render(three.scene, three.camera);
+        updateMetrics(card, frame, displayValues, rows, cols);
+      }
+
+      // ── Playback ──
+      // Render interval matches index.html REFRESH_INTERVAL_MS (33ms ≈ 30fps).
+      // Each tick advances by wall-clock elapsed × speed, skipping intermediate
+      // frames for high-frequency data so 1× speed = real time.
+      const REPLAY_RENDER_INTERVAL_MS = 33;
+
+      function updatePlayBtnTitle(card) {
+        if (!card.btnPlay) return;
+        card.btnPlay.title = card.isPlaying ? t('replay.btn.pause') : t('replay.btn.play');
+      }
+
+      function stopPlayback(card) {
+        if (card.playTimerId !== null) { clearTimeout(card.playTimerId); card.playTimerId = null; }
+        card.isPlaying = false;
+        card.btnPlay.innerHTML = '<i class="fas fa-play"></i>';
+        updatePlayBtnTitle(card);
+      }
+
+      function scheduleNextFrame(card) {
+        if (!card.isPlaying || card.currentFrame >= card.frames.length-1) { stopPlayback(card); return; }
+        card.playTimerId = setTimeout(() => {
+          if (!card.isPlaying) return;
+          // Compute how much data-time elapsed since last render
+          const now = performance.now();
+          const wallElapsed = now - card._playLastRenderWall;
+          const dataDelta = (wallElapsed / 1000) * card.playSpeed; // seconds of data
+          const targetTs = card.frames[card.currentFrame].ts + dataDelta;
+          // Advance to the frame whose ts first meets/exceeds targetTs (skip frames)
+          let next = card.currentFrame + 1;
+          while (next < card.frames.length - 1 && card.frames[next].ts < targetTs) next++;
+          card.currentFrame = next;
+          card._playLastRenderWall = now;
+          renderFrame(card, card.currentFrame);
+          updateTimelineUI(card);
+          if (card.currentFrame >= card.frames.length - 1) { stopPlayback(card); return; }
+          scheduleNextFrame(card);
+        }, REPLAY_RENDER_INTERVAL_MS);
+      }
+
+      function startPlayback(card) {
+        if (!card.frames.length) return;
+        if (card.currentFrame >= card.frames.length-1) card.currentFrame = 0;
+        card.isPlaying = true;
+        card.btnPlay.innerHTML = '<i class="fas fa-pause"></i>';
+        updatePlayBtnTitle(card);
+        card._playLastRenderWall = performance.now();
+        scheduleNextFrame(card);
+      }
+
+      function goToFrame(card, idx) {
+        card.currentFrame = Math.max(0, Math.min(idx, card.frames.length-1));
+        renderFrame(card, card.currentFrame);
+        updateTimelineUI(card);
+      }
+
+      function updateTimelineUI(card) {
+        card.timeline.value = card.currentFrame;
+        card.frameDisplay.textContent = `${card.currentFrame+1} / ${card.frames.length}`;
+        if (card.frames.length) {
+          const ts = card.frames[card.currentFrame].ts;
+          const d = new Date(ts*1000);
+          const hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0'),
+                ss=String(d.getSeconds()).padStart(2,'0'), ms=String(d.getMilliseconds()).padStart(3,'0');
+          card.timeDisplay.textContent = `${hh}:${mm}:${ss}.${ms}`;
+        } else {
+          card.timeDisplay.textContent = '--:--:--.---';
+        }
+      }
+
+      // ── Populate layout options ──
+      function populateLayoutOptions(card, sn) {
+        const pairs = computeFactorPairs(sn);
+        card.layoutSelect.innerHTML = '';
+        pairs.forEach(([r, c]) => {
+          const opt = document.createElement('option');
+          opt.value = `${r}x${c}`; opt.textContent = `${r} × ${c}`;
+          card.layoutSelect.appendChild(opt);
+        });
+        if (pairs.length) {
+          card.selectedLayoutKey = `${pairs[0][0]}x${pairs[0][1]}`;
+          card.layoutSelect.value = card.selectedLayoutKey;
+          card.layoutSelect.disabled = false;
+        } else {
+          card.selectedLayoutKey = null; card.layoutSelect.disabled = true;
+        }
+      }
+
+      // ── Profile list ──
+      async function loadProfileList(card) {
+        try {
+          const resp = await fetch('/api/profiles'); if (!resp.ok) return;
+          const list = await resp.json();
+          const sel = card.profileSelect, cur = sel.value;
+          sel.innerHTML = `<option value="">${t('controls.profile_none')}</option>`;
+          list.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.name; opt.textContent = p.displayName || p.name;
+            sel.appendChild(opt);
+          });
+          if (cur) sel.value = cur;
+        } catch (_) {}
+      }
+
+      function applyProfile(card, profileData) {
+        cleanupProfile2d(card); cleanupThree(card);
+        card.profile = profileData;
+        card.heatmapContainer.classList.remove('has-3d');
+        card.heatmapContainer.innerHTML = '';
+        if (profileData) {
+          card.profileControls.style.display = '';
+          card.standardControls.style.display = 'none';
+          const disp = profileData.display || {};
+          const activeMode = disp.mode || '2d';
+          card.mode2dBtn.classList.toggle('active', activeMode==='2d');
+          card.mode3dBtn.classList.toggle('active', activeMode==='3d');
+          if (Number.isFinite(disp.pressureMin)) card.profilePmin.value = disp.pressureMin;
+          if (Number.isFinite(disp.pressureMax)) card.profilePmax.value = disp.pressureMax;
+          if (Number.isFinite(disp.dotSize))     card.profileDotSize.value = disp.dotSize;
+        } else {
+          card.profileControls.style.display = 'none';
+          card.standardControls.style.display = '';
+        }
+        if (card.frames.length) renderFrame(card, card.currentFrame);
+      }
+
+      // ============================================================
+      // Card factory
+      // ============================================================
+      const cards = [];
+      let cardCounter = 0;
+
+      function createCardDOM(cardId) {
+        const div = document.createElement('div');
+        div.className = 'replay-card';
+        div.id = cardId;
+        div.innerHTML = `
+          <div class="card shadow-sm">
+            <div class="card-body">
+
+              <!-- Header: file + load + remove -->
+              <div class="d-flex align-items-center gap-1 mb-1">
+                <button class="btn btn-sm btn-outline-secondary flex-fill card-browse-btn">
+                  <i class="fas fa-folder-open me-1"></i><span data-i18n="replay.browse_btn">Browse</span>
+                </button>
+                <button class="btn btn-sm btn-primary card-load-btn" disabled>
+                  <i class="fas fa-sync-alt me-1"></i><span data-i18n="replay.load_btn">Load</span>
+                </button>
+                <button class="btn btn-sm btn-outline-secondary card-profile-reload-btn" data-i18n-title="replay.refresh_tip" title="Refresh">
+                  <i class="fas fa-rotate-right"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-danger card-remove-btn" data-i18n-title="replay.remove_card" title="Remove">
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+
+              <!-- File display -->
+              <div class="card-file-display mb-1">
+                <span data-i18n="replay.no_file_selected">No file selected</span>
+              </div>
+              <div class="card-load-status text-muted" style="font-size:0.78rem;min-height:1.1em;"></div>
+
+              <!-- Profile selector -->
+              <div class="input-group input-group-sm mb-1">
+                <span class="input-group-text" style="font-size:0.78rem;" data-i18n="controls.profile">Profile</span>
+                <select class="form-select form-select-sm card-profile-select">
+                  <option value="" data-i18n="controls.profile_none">-- None --</option>
+                </select>
+              </div>
+
+              <!-- Profile display controls -->
+              <div class="card-profile-controls mb-1" style="display:none;">
+                <div class="btn-group btn-group-sm w-100 mb-1">
+                  <button class="btn btn-sm btn-outline-primary active card-mode-2d" data-i18n="display.2d">2D</button>
+                  <button class="btn btn-sm btn-outline-primary card-mode-3d" data-i18n="display.3d">3D</button>
+                </div>
+                <div class="d-flex gap-1 mb-1">
+                  <div class="input-group input-group-sm flex-fill">
+                    <span class="input-group-text" style="font-size:0.7rem;" data-i18n="display.p_min">Min</span>
+                    <input type="number" class="form-control card-profile-pmin" value="300">
+                  </div>
+                  <div class="input-group input-group-sm flex-fill">
+                    <span class="input-group-text" style="font-size:0.7rem;" data-i18n="display.p_max">Max</span>
+                    <input type="number" class="form-control card-profile-pmax" value="1000">
+                  </div>
+                </div>
+                <div class="d-flex align-items-center gap-1">
+                  <span style="font-size:0.7rem;white-space:nowrap;" data-i18n="display.dot_size">Size</span>
+                  <input type="range" class="form-range flex-fill card-profile-dot-size" min="0.5" max="4" step="0.25" value="1">
+                </div>
+              </div>
+
+              <!-- Standard controls -->
+              <div class="card-standard-controls mb-1">
+                <div class="d-flex gap-1 flex-wrap">
+                  <div class="input-group input-group-sm" style="flex:1;min-width:110px;">
+                    <span class="input-group-text" style="font-size:0.78rem;" data-i18n="controls.layout">Layout</span>
+                    <select class="form-select form-select-sm card-layout-select" disabled>
+                      <option value="">--</option>
+                    </select>
+                  </div>
+                  <div class="input-group input-group-sm" style="flex:1;min-width:120px;">
+                    <span class="input-group-text" style="font-size:0.78rem;" data-i18n="display.p_min">Min</span>
+                    <input type="number" class="form-control form-control-sm card-pmin" style="width:55px;">
+                    <span class="input-group-text" style="font-size:0.78rem;" data-i18n="display.p_max">Max</span>
+                    <input type="number" class="form-control form-control-sm card-pmax" style="width:55px;">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Playback (hover to reveal) -->
+              <div class="card-playback">
+                <div class="d-flex align-items-center gap-1 mb-1 flex-wrap">
+                  <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary card-btn-first" data-i18n-title="replay.btn.first" title="First"><i class="fas fa-backward-step"></i></button>
+                    <button class="btn btn-outline-secondary card-btn-prev"  data-i18n-title="replay.btn.prev"  title="Prev"><i class="fas fa-backward"></i></button>
+                    <button class="btn btn-outline-secondary card-btn-play"  data-i18n-title="replay.btn.play"  title="Play"><i class="fas fa-play"></i></button>
+                    <button class="btn btn-outline-secondary card-btn-next"  data-i18n-title="replay.btn.next"  title="Next"><i class="fas fa-forward"></i></button>
+                    <button class="btn btn-outline-secondary card-btn-last"  data-i18n-title="replay.btn.last"  title="Last"><i class="fas fa-forward-step"></i></button>
+                  </div>
+                  <select class="form-select form-select-sm card-speed-select" style="width:72px;">
+                    <option value="0.25">0.25×</option>
+                    <option value="0.5">0.5×</option>
+                    <option value="1" selected>1×</option>
+                    <option value="2">2×</option>
+                    <option value="4">4×</option>
+                    <option value="8">8×</option>
+                  </select>
+                  <span class="card-time-display ms-auto">--:--:--.---</span>
+                </div>
+                <input type="range" class="card-timeline w-100" min="0" max="0" value="0" disabled>
+                <div class="d-flex justify-content-end">
+                  <span class="card-frame-display">0 / 0</span>
+                </div>
+              </div>
+
+              <!-- Heatmap -->
+              <div class="card-heatmap mb-2">
+                <div class="heatmap-placeholder" data-i18n="replay.placeholder">Select file...</div>
+              </div>
+
+              <!-- Metrics -->
+              <div class="device-metrics mb-1">
+                <div class="device-sensor-grid">
+                  <div class="overview-sensor-block">
+                    <div class="fw-semibold" data-i18n="overview.gyro">Gyro (°/s)</div>
+                    <div class="sensor-vector">
+                      <div class="axis-value"><span>X</span><strong class="card-gyro-x">--</strong></div>
+                      <div class="axis-value"><span>Y</span><strong class="card-gyro-y">--</strong></div>
+                      <div class="axis-value"><span>Z</span><strong class="card-gyro-z">--</strong></div>
+                    </div>
+                  </div>
+                  <div class="overview-sensor-block">
+                    <div class="fw-semibold" data-i18n="overview.acc">Acc (m/s²)</div>
+                    <div class="sensor-vector">
+                      <div class="axis-value"><span>X</span><strong class="card-acc-x">--</strong></div>
+                      <div class="axis-value"><span>Y</span><strong class="card-acc-y">--</strong></div>
+                      <div class="axis-value"><span>Z</span><strong class="card-acc-z">--</strong></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="overview-sensor-block mt-2">
+                  <div class="fw-semibold" data-i18n="overview.cop">COP</div>
+                  <div class="cop-board card-cop-board">
+                    <div class="cop-board-placeholder card-cop-placeholder" data-i18n="overview.cop_empty">--</div>
+                    <div class="cop-dot card-cop-dot"></div>
+                  </div>
+                  <div class="row text-center cop-values mt-2">
+                    <div class="col">
+                      <div class="text-muted small" data-i18n="overview.cop_x">X</div>
+                      <div class="fw-semibold card-cop-x">--</div>
+                    </div>
+                    <div class="col">
+                      <div class="text-muted small" data-i18n="overview.cop_y">Y</div>
+                      <div class="fw-semibold card-cop-y">--</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        `;
+        return div;
+      }
+
+      function createCard() {
+        if (cards.length >= 4) return null;
+        cardCounter++;
+        const cardId = `replay-card-${cardCounter}`;
+        const el = createCardDOM(cardId);
+        const cardsArea = document.getElementById('cards-area');
+        const addWrapper = document.getElementById('add-card-wrapper');
+        cardsArea.insertBefore(el, addWrapper);
+
+        const q = sel => el.querySelector(sel);
+
+        const card = {
+          id: cardId, el,
+          heatmapContainer: q('.card-heatmap'),
+          browseBtn:    q('.card-browse-btn'),
+          loadBtn:      q('.card-load-btn'),
+          removeBtn:    q('.card-remove-btn'),
+          profileReloadBtn: q('.card-profile-reload-btn'),
+          fileDisplay:  q('.card-file-display'),
+          loadStatus:   q('.card-load-status'),
+          profileSelect:    q('.card-profile-select'),
+          profileControls:  q('.card-profile-controls'),
+          standardControls: q('.card-standard-controls'),
+          mode2dBtn:    q('.card-mode-2d'),
+          mode3dBtn:    q('.card-mode-3d'),
+          profilePmin:  q('.card-profile-pmin'),
+          profilePmax:  q('.card-profile-pmax'),
+          profileDotSize: q('.card-profile-dot-size'),
+          layoutSelect: q('.card-layout-select'),
+          pminInput:    q('.card-pmin'),
+          pmaxInput:    q('.card-pmax'),
+          gyroX: q('.card-gyro-x'), gyroY: q('.card-gyro-y'), gyroZ: q('.card-gyro-z'),
+          accX:  q('.card-acc-x'),  accY:  q('.card-acc-y'),  accZ:  q('.card-acc-z'),
+          copBoard: q('.card-cop-board'), copDot: q('.card-cop-dot'),
+          copPlaceholder: q('.card-cop-placeholder'),
+          copX: q('.card-cop-x'), copY: q('.card-cop-y'),
+          btnFirst: q('.card-btn-first'), btnPrev: q('.card-btn-prev'),
+          btnPlay: q('.card-btn-play'), btnNext: q('.card-btn-next'), btnLast: q('.card-btn-last'),
+          speedSelect: q('.card-speed-select'),
+          timeline: q('.card-timeline'),
+          timeDisplay: q('.card-time-display'),
+          frameDisplay: q('.card-frame-display'),
+          // state
+          frames: [], currentFrame: 0, isPlaying: false, playTimerId: null, playSpeed: 1.0,
+          _playLastRenderWall: 0,
+          profile: null, selectedLayoutKey: null,
+          three: null, profileWrapper: null, profileCanvas: null, profileImg: null,
+          profileThreeExtra: null, _profileFitImage: null,
+          fbSelectedPath: '',
+        };
+
+        initCardEvents(card);
+        applyLanguageToEl(el);
+        loadProfileList(card);
+        cards.push(card);
+        updateGrid();
+        return card;
+      }
+
+      function removeCard(card) {
+        stopPlayback(card);
+        cleanupProfile2d(card);
+        cleanupThree(card);
+        card.el.remove();
+        const idx = cards.indexOf(card);
+        if (idx !== -1) cards.splice(idx, 1);
+        updateGrid();
+      }
+
+      function updateGrid() {
+        const area = document.getElementById('cards-area');
+        const addWrapper = document.getElementById('add-card-wrapper');
+        // Column count
+        if (cards.length <= 1) area.classList.remove('cols-2');
+        else area.classList.add('cols-2');
+        // Hide/show add button
+        if (cards.length >= 4) addWrapper.classList.add('hidden');
+        else addWrapper.classList.remove('hidden');
+      }
+
+      function initCardEvents(card) {
+        // Browse button
+        card.browseBtn.addEventListener('click', () => {
+          fbActiveCard = card;
+          fbOpenModal();
+        });
+
+        // Load button
+        card.loadBtn.addEventListener('click', async () => {
+          if (!card.fbSelectedPath) return;
+          const parts = card.fbSelectedPath.split('/');
+          if (parts.length < 3) return;
+          const mac = parts[0], date = parts[1], file = parts[2];
+
+          card.loadBtn.disabled = true;
+          card.loadStatus.textContent = t('replay.loading');
+          stopPlayback(card);
+
+          try {
+            const resp = await fetch(`/api/replay/data?mac=${encodeURIComponent(mac)}&date=${encodeURIComponent(date)}&file=${encodeURIComponent(file)}`);
+            if (!resp.ok) { card.loadStatus.textContent = `Error ${resp.status}`; card.loadBtn.disabled=false; return; }
+            const data = await resp.json();
+            card.frames = data.frames || [];
+            card.currentFrame = 0;
+            if (!card.frames.length) {
+              card.loadStatus.textContent = t('replay.no_data'); card.loadBtn.disabled=false; return;
+            }
+            const sn = data.sn || (card.frames[0].p||[]).length;
+            populateLayoutOptions(card, sn);
+            card.timeline.max = card.frames.length - 1;
+            card.timeline.value = 0; card.timeline.disabled = false;
+            cleanupProfile2d(card); cleanupThree(card);
+            card.heatmapContainer.classList.remove('has-3d');
+            card.heatmapContainer.innerHTML = '';
+            // re-apply profile
+            const profileName = card.profileSelect.value;
+            if (profileName) {
+              try {
+                const pr = await fetch(`/api/profiles/${encodeURIComponent(profileName)}`);
+                if (pr.ok) card.profile = await pr.json(); else card.profile = null;
+              } catch (_) { card.profile = null; }
+            } else { card.profile = null; }
+            renderFrame(card, 0);
+            updateTimelineUI(card);
+            card.loadStatus.textContent = t('replay.loaded').replace('{n}', card.frames.length);
+          } catch (err) {
+            card.loadStatus.textContent = `${t('replay.load_failed')}: ${err.message}`;
+          }
+          card.loadBtn.disabled = false;
+        });
+
+        // Remove button
+        card.removeBtn.addEventListener('click', () => removeCard(card));
+
+        // Profile reload
+        card.profileReloadBtn.addEventListener('click', () => loadProfileList(card));
+
+        // Profile select
+        card.profileSelect.addEventListener('change', async e => {
+          const name = e.target.value;
+          if (!name) { applyProfile(card, null); return; }
+          try {
+            const resp = await fetch(`/api/profiles/${encodeURIComponent(name)}`);
+            if (resp.ok) applyProfile(card, await resp.json());
+          } catch (_) {}
+        });
+
+        // Profile mode 2D/3D
+        card.mode2dBtn.addEventListener('click', () => {
+          if (!card.profile) return;
+          card.profile.display = card.profile.display || {};
+          card.profile.display.mode = '2d';
+          card.mode2dBtn.classList.add('active'); card.mode3dBtn.classList.remove('active');
+          cleanupProfile2d(card); cleanupThree(card);
+          card.heatmapContainer.innerHTML = '';
+          if (card.frames.length) renderFrame(card, card.currentFrame);
+        });
+        card.mode3dBtn.addEventListener('click', () => {
+          if (!card.profile) return;
+          card.profile.display = card.profile.display || {};
+          card.profile.display.mode = '3d';
+          card.mode3dBtn.classList.add('active'); card.mode2dBtn.classList.remove('active');
+          cleanupProfile2d(card); cleanupThree(card);
+          card.heatmapContainer.innerHTML = '';
+          if (card.frames.length) renderFrame(card, card.currentFrame);
+        });
+
+        // Profile pmin/pmax/dot
+        [card.profilePmin, card.profilePmax, card.profileDotSize].forEach(inp => {
+          inp.addEventListener('input', () => {
+            if (!card.profile) return;
+            card.profile.display = card.profile.display || {};
+            const pmin=parseFloat(card.profilePmin.value), pmax=parseFloat(card.profilePmax.value), dot=parseFloat(card.profileDotSize.value);
+            if (Number.isFinite(pmin)) card.profile.display.pressureMin = pmin;
+            if (Number.isFinite(pmax)) card.profile.display.pressureMax = pmax;
+            if (Number.isFinite(dot))  card.profile.display.dotSize = dot;
+            if (card.frames.length) renderFrame(card, card.currentFrame);
+          });
+        });
+
+        // Layout select
+        card.layoutSelect.addEventListener('change', () => {
+          card.selectedLayoutKey = card.layoutSelect.value || null;
+          if (card.frames.length) renderFrame(card, card.currentFrame);
+        });
+
+        // Pressure range inputs
+        [card.pminInput, card.pmaxInput].forEach(inp => {
+          inp.addEventListener('input', () => { if (card.frames.length) renderFrame(card, card.currentFrame); });
+        });
+
+        // Playback buttons — 聯動：任意卡片的播放/暫停影響所有卡片
+        card.btnPlay.addEventListener('click', () => {
+          const anyPlaying = cards.some(c => c.isPlaying);
+          if (anyPlaying) {
+            cards.forEach(c => stopPlayback(c));
+          } else {
+            cards.forEach(c => { if (c.frames.length) startPlayback(c); });
+          }
+        });
+        card.btnFirst.addEventListener('click', () => { stopPlayback(card); goToFrame(card, 0); });
+        card.btnLast.addEventListener('click',  () => { stopPlayback(card); goToFrame(card, card.frames.length-1); });
+        card.btnPrev.addEventListener('click',  () => { stopPlayback(card); goToFrame(card, card.currentFrame-1); });
+        card.btnNext.addEventListener('click',  () => { stopPlayback(card); goToFrame(card, card.currentFrame+1); });
+
+        card.timeline.addEventListener('input', () => {
+          stopPlayback(card); goToFrame(card, parseInt(card.timeline.value, 10));
+        });
+
+        card.speedSelect.addEventListener('change', e => {
+          card.playSpeed = parseFloat(e.target.value) || 1;
+        });
+      }
+
+      // Add card button
+      document.getElementById('add-card-wrapper').addEventListener('click', () => {
+        createCard();
+      });
+
+      // ============================================================
+      // Finder Modal（shared，tracks fbActiveCard）
+      // ============================================================
+      let fbCurrentPath  = '';
+      let fbSelectedPath = '';
+      let fbActiveCard   = null;
+
+      const fbOverlay  = document.getElementById('fb-overlay');
+      const fbListEl   = document.getElementById('fb-list');
+      const fbBreadEl  = document.getElementById('fb-breadcrumb');
+      const fbOpenBtn  = document.getElementById('fb-open-btn');
+      const fbSelName  = document.getElementById('fb-sel-name');
+
+      function fbOpenModal() {
+        fbSelectedPath = '';
+        fbOpenBtn.disabled = true;
+        fbSelName.textContent = '';
+        fbOverlay.style.display = 'flex';
+        document.addEventListener('keydown', fbEscHandler);
+        fbBrowseTo('');
+      }
+
+      function fbCloseModal() {
+        fbOverlay.style.display = 'none';
+        document.removeEventListener('keydown', fbEscHandler);
+      }
+
+      function fbEscHandler(e) { if (e.key === 'Escape') fbCloseModal(); }
+
+      function fbRenderBreadcrumb(path) {
+        fbBreadEl.innerHTML = '';
+        const parts = path ? path.split('/') : [];
+        const root = document.createElement('span');
+        root.className = parts.length ? 'fb-crumb' : 'fb-crumb-cur';
+        root.textContent = t('replay.fb_title');
+        if (parts.length) root.addEventListener('click', () => fbBrowseTo(''));
+        fbBreadEl.appendChild(root);
+        parts.forEach((seg, i) => {
+          const sep = document.createElement('span'); sep.className='fb-sep'; sep.textContent=' › ';
+          fbBreadEl.appendChild(sep);
+          const crumb = document.createElement('span');
+          const isLast = i === parts.length-1;
+          crumb.className = isLast ? 'fb-crumb-cur' : 'fb-crumb';
+          crumb.textContent = seg;
+          if (!isLast) {
+            const tp = parts.slice(0,i+1).join('/');
+            crumb.addEventListener('click', () => fbBrowseTo(tp));
+          }
+          fbBreadEl.appendChild(crumb);
+        });
+      }
+
+      async function fbBrowseTo(path) {
+        fbCurrentPath = path;
+        fbSelectedPath = '';
+        fbOpenBtn.disabled = true;
+        fbSelName.textContent = '';
+        fbRenderBreadcrumb(path);
+        fbListEl.innerHTML = `<li class="fb-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</li>`;
+        try {
+          const resp = await fetch(`/api/replay/browse?path=${encodeURIComponent(path)}`);
+          if (!resp.ok) throw new Error(resp.status);
+          const data = await resp.json();
+          fbRenderEntries(data.entries || []);
+        } catch (_) {
+          fbListEl.innerHTML = `<li class="fb-empty"><i class="fas fa-exclamation-triangle me-1"></i>${t('replay.fb_error')}</li>`;
+        }
+      }
+
+      function fbRenderEntries(entries) {
+        fbListEl.innerHTML = '';
+        if (!entries.length) {
+          fbListEl.innerHTML = `<li class="fb-empty">${t('replay.fb_empty')}</li>`; return;
+        }
+        entries.forEach(entry => {
+          const li = document.createElement('li');
+          li.className = 'fb-item'; li.setAttribute('role','option');
+          const isDir = entry.type === 'dir';
+          const iconEl = document.createElement('span'); iconEl.className = 'fb-item-icon';
+          iconEl.innerHTML = isDir
+            ? '<i class="fas fa-folder" style="color:#f39c12;"></i>'
+            : '<i class="fas fa-file-csv" style="color:#3498db;"></i>';
+          const nameEl = document.createElement('span'); nameEl.className='fb-item-name'; nameEl.textContent=entry.name;
+          li.appendChild(iconEl); li.appendChild(nameEl);
+          if (!isDir && entry.size != null) {
+            const sizeEl = document.createElement('span');
+            sizeEl.className='fb-item-size'; sizeEl.textContent=`${Math.round(entry.size/1024)} KB`;
+            li.appendChild(sizeEl);
+          }
+          if (isDir) {
+            li.addEventListener('click', () => {
+              const target = fbCurrentPath ? `${fbCurrentPath}/${entry.name}` : entry.name;
+              fbBrowseTo(target);
+            });
+          } else {
+            li.addEventListener('click', () => {
+              fbListEl.querySelectorAll('.fb-item.fb-selected').forEach(el=>el.classList.remove('fb-selected'));
+              li.classList.add('fb-selected');
+              fbSelectedPath = fbCurrentPath ? `${fbCurrentPath}/${entry.name}` : entry.name;
+              fbSelName.textContent = fbSelectedPath;
+              fbOpenBtn.disabled = false;
+            });
+            li.addEventListener('dblclick', () => {
+              fbListEl.querySelectorAll('.fb-item.fb-selected').forEach(el=>el.classList.remove('fb-selected'));
+              li.classList.add('fb-selected');
+              fbSelectedPath = fbCurrentPath ? `${fbCurrentPath}/${entry.name}` : entry.name;
+              fbConfirmSelection();
+            });
+          }
+          fbListEl.appendChild(li);
+        });
+      }
+
+      function fbConfirmSelection() {
+        if (!fbSelectedPath || !fbActiveCard) return;
+        fbActiveCard.fbSelectedPath = fbSelectedPath;
+        const parts = fbSelectedPath.split('/');
+        fbActiveCard.fileDisplay.textContent = parts[parts.length-1];
+        fbActiveCard.fileDisplay.title = fbSelectedPath;
+        fbActiveCard.loadBtn.disabled = false;
+        fbCloseModal();
+      }
+
+      fbOpenBtn.addEventListener('click', fbConfirmSelection);
+      document.getElementById('fb-cancel-btn').addEventListener('click', fbCloseModal);
+      document.getElementById('fb-close-btn').addEventListener('click', fbCloseModal);
+      fbOverlay.addEventListener('click', e => { if (e.target===fbOverlay) fbCloseModal(); });
+
+      // ============================================================
+      // Resize handler
+      // ============================================================
+      window.addEventListener('resize', () => {
+        cards.forEach(card => { if (card.frames.length) renderFrame(card, card.currentFrame); });
+      });
+
+      window.addEventListener('three-ready', () => {
+        cards.forEach(card => { if (card.frames.length) renderFrame(card, card.currentFrame); });
+      });
+
+      // ============================================================
+      // Init
+      // ============================================================
+      applyLanguage();
+      createCard();  // 預設建立第一張卡片
+
+    })();
+    </script>
+  </body>
+</html>

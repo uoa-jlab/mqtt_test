@@ -66,6 +66,11 @@
                     {% else %} File List
                     {% endif %}
                 </h5>
+                {% if session.get('sso_id') == 'admin' and step == 'devices' %}
+                <button id="rescan-btn" class="btn btn-sm btn-outline-warning" onclick="doRescan()" title="重新掃描磁盤並更新文件索引">
+                    <i class="fas fa-sync-alt me-1"></i>Rescan
+                </button>
+                {% endif %}
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -190,5 +195,48 @@
             </div>
         </div>
     </div>
+<script>
+function doRescan() {
+    const btn = document.getElementById('rescan-btn');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Scanning...';
+
+    fetch('/api/admin/rescan', { method: 'POST' })
+        .then(r => {
+            if (!r.ok && r.status !== 202) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(() => pollRescanStatus())
+        .catch(e => {
+            btn.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>Error';
+            btn.disabled = false;
+            alert('Request failed: ' + e);
+        });
+}
+
+function pollRescanStatus() {
+    const btn = document.getElementById('rescan-btn');
+    fetch('/api/admin/rescan/status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.running) {
+                setTimeout(pollRescanStatus, 1000);
+            } else if (data.result && data.result.error) {
+                btn.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>Error';
+                btn.classList.replace('btn-outline-warning', 'btn-outline-danger');
+                btn.disabled = false;
+                alert('Rescan failed: ' + data.result.error);
+            } else if (data.result) {
+                btn.innerHTML = `<i class="fas fa-check me-1"></i>${data.result.inserted} files`;
+                btn.classList.replace('btn-outline-warning', 'btn-outline-success');
+                setTimeout(() => location.reload(), 1200);
+            } else {
+                setTimeout(pollRescanStatus, 1000);
+            }
+        })
+        .catch(() => setTimeout(pollRescanStatus, 2000));
+}
+</script>
 </body>
 </html>

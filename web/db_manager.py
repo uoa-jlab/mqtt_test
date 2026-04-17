@@ -1,6 +1,12 @@
 import os
+import pathlib
+import re
+from datetime import datetime, timezone, timedelta
 import psycopg2
 from psycopg2 import pool, extras
+
+# 擁有全設備可見性的帳號（等同 admin 權限查詢，不受 user_group 過濾）
+_SUPERUSER_IDS: frozenset[str] = frozenset({"admin", "user"})
 
 # 从环境变量加载配置
 DB_HOST = os.getenv("DB_HOST")
@@ -72,7 +78,7 @@ def get_user_allowed_devices(username):
     try:
         conn = get_db_connection()
         with conn.cursor(cursor_factory=extras.DictCursor) as cur:
-            if username == 'admin':
+            if username in _SUPERUSER_IDS:
                 # 超级管理员：获取所有设备
                 cur.execute("SELECT device_id, mac_address FROM device_info")
             else:
@@ -108,10 +114,10 @@ def get_user_files(username):
     try:
         conn = get_db_connection()
         with conn.cursor(cursor_factory=extras.DictCursor) as cur:
-            if username == 'admin':
+            if username in _SUPERUSER_IDS:
                 cur.execute("""
-                    SELECT f.file_name, f.file_path, f.mac_address, f.file_size, f.file_date 
-                    FROM data_files f 
+                    SELECT f.file_name, f.file_path, f.mac_address, f.file_size, f.file_date
+                    FROM data_files f
                     ORDER BY f.file_datetime DESC LIMIT 100
                 """)
             else:
@@ -183,3 +189,79 @@ def get_device_files(mac, date_str):
     finally:
         release_db_connection(conn)
     return files
+
+
+def rebuild_file_index(root_dir: str) -> dict:
+    """
+    掃描 root_dir 下所有 CSV 文件，重建 data_files 表。
+    僅處理已在 device_info 中登錄的 MAC。
+    時間戳從路徑推導（<MAC>/<YYYYMMDD>/<HHMMSS>.csv），不開檔讀取，速度快。
+    返回 {'inserted': int, 'error': str|None}
+    """
+    _JST = timezone(timedelta(hours=9))
+
+    def _ts_from_path(p: pathlib.Path) -> datetime:
+        """從路徑 .../YYYYMMDD/HHMMSS.csv 推導時間戳，失敗退回 mtime。"""
+        try:
+            date_part = p.parent.name   # YYYYMMDD
+            time_part = p.stem          # HHMMSS
+            if len(date_part) == 8 and len(time_part) == 6:
+                return datetime.strptime(date_part + time_part, "%Y%m%d%H%M%S").replace(tzinfo=_JST)
+        except Exception:
+            pass
+        return datetime.fromtimestamp(p.stat().st_mtime, _JST)
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {'inserted': 0, 'error': 'No DB connection'}
+
+        root = pathlib.Path(root_dir)
+        if not root.exists():
+            return {'inserted': 0, 'error': f'Path not found: {root_dir}'}
+
+        # 取得所有合法 MAC
+        with conn.cursor() as cur:
+            cur.execute("SELECT mac_address FROM device_info")
+            valid_macs = {row[0] for row in cur.fetchall() if row[0]}
+
+        rows = []
+        for dn_dir in root.iterdir():
+            if not dn_dir.is_dir():
+                continue
+            dn_hex = dn_dir.name
+            if dn_hex not in valid_macs:
+                continue
+            for p in dn_dir.rglob('*.csv'):
+                try:
+                    dt = _ts_from_path(p)
+                    rel_dir = str(p.parent.relative_to(root)).replace('\\', '/') + '/'
+                    rows.append((
+                        dn_hex, dt.date(), dt.time(), dt,
+                        p.name, rel_dir, p.stat().st_size, None, 'Rescanned'
+                    ))
+                except Exception:
+                    pass
+
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE TABLE data_files RESTART IDENTITY CASCADE;")
+                extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO data_files
+                        (mac_address, file_date, file_time, file_datetime,
+                         file_name, file_path, file_size, side_position, file_memo)
+                    VALUES %s
+                    """,
+                    rows,
+                    page_size=500
+                )
+
+        return {'inserted': len(rows), 'error': None}
+
+    except Exception as e:
+        return {'inserted': 0, 'error': str(e)}
+    finally:
+        release_db_connection(conn)

@@ -80,6 +80,9 @@ LICENSE_DEFAULT_TIER = os.getenv("LICENSE_DEFAULT_TIER", "basic")
 DISCOVER_DEFAULT_ATTEMPTS = int(os.getenv("CONFIG_DISCOVER_ATTEMPTS", "2"))
 DISCOVER_DEFAULT_GAP = float(os.getenv("CONFIG_DISCOVER_GAP", "0.2"))
 
+# 擁有全設備可見性的帳號（等同 admin 權限，不受 user_group 過濾）
+_SUPERUSER_IDS: frozenset[str] = frozenset({"admin", "user"})
+
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY")
 if not app.secret_key:
@@ -153,7 +156,7 @@ def _check_device_permission_for_user(sso_id: str, dn: str) -> bool:
     """给定 sso_id 直接检查设备权限（不依赖 session/g，供 WebSocket 处理器调用）。"""
     if not dn:
         return False
-    if sso_id == 'admin':
+    if sso_id in _SUPERUSER_IDS:
         return True
     allowed_devices = db_manager.get_user_allowed_devices(sso_id)
     target_dn_norm = _normalize_dn(dn)
@@ -213,7 +216,7 @@ def api_token():
 @login_required
 def api_user_info():
     user = _current_sso_id()
-    is_admin = (user == 'admin')
+    is_admin = (user in _SUPERUSER_IDS)
     # Return session timeout in seconds (static config)
     timeout = app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()
     return jsonify({
@@ -236,7 +239,7 @@ def downloads():
     date_str = request.args.get('date')
     
     # Check permission for MAC
-    if mac and user != 'admin':
+    if mac and user not in _SUPERUSER_IDS:
         allowed = db_manager.get_user_allowed_devices(user)
         allowed_macs = [d['mac_address'] for d in allowed]
         if mac not in allowed_macs:
@@ -245,14 +248,69 @@ def downloads():
     if mac and date_str:
         # Step 3: Files
         files = db_manager.get_device_files(mac, date_str)
+        # Fallback: scan physical disk if DB has no records for this mac+date
+        if not files:
+            try:
+                _JST = timezone(timedelta(hours=9))
+                date_dir = _REPLAY_DATA_ROOT / mac / date_str
+                if date_dir.is_dir():
+                    for p in sorted(date_dir.iterdir(), reverse=True):
+                        if p.is_file() and p.suffix.lower() == '.csv':
+                            try:
+                                dt = datetime.strptime(date_str + p.stem, "%Y%m%d%H%M%S").replace(tzinfo=_JST)
+                            except Exception:
+                                dt = datetime.fromtimestamp(p.stat().st_mtime, _JST)
+                            files.append({
+                                'file_name': p.name,
+                                'file_path': f"{mac}/{date_str}/",
+                                'file_size': p.stat().st_size,
+                                'file_time': dt.strftime("%H:%M:%S"),
+                            })
+            except Exception:
+                pass
         return render_template("downloads.html", step="files", mac=mac, date=date_str, files=files)
     elif mac:
         # Step 2: Dates
         dates = db_manager.get_device_dates(mac)
+        # Fallback: scan physical disk if DB has no records
+        if not dates:
+            try:
+                mac_dir = _REPLAY_DATA_ROOT / mac
+                if mac_dir.is_dir():
+                    dates = sorted(
+                        [p.name for p in mac_dir.iterdir() if p.is_dir() and re.match(r'^\d{8}$', p.name)],
+                        reverse=True
+                    )
+            except Exception:
+                pass
         return render_template("downloads.html", step="dates", mac=mac, dates=dates)
     else:
         # Step 1: Devices
-        devices = db_manager.get_user_allowed_devices(user)
+        # Admin: merge device_info + physical mqtt_store dirs (may have unregistered MACs)
+        if user in _SUPERUSER_IDS:
+            db_devices = {d['mac_address']: d for d in db_manager.get_user_allowed_devices(user)}
+            try:
+                disk_macs = sorted(
+                    p.name for p in _REPLAY_DATA_ROOT.iterdir()
+                    if p.is_dir() and re.match(r'^[0-9A-Fa-f]{6,17}$', p.name)
+                )
+            except Exception:
+                disk_macs = []
+            devices = []
+            seen = set()
+            for mac_addr in disk_macs:
+                seen.add(mac_addr)
+                d = db_devices.get(mac_addr)
+                devices.append({
+                    'mac_address': mac_addr,
+                    'device_id': d['device_id'] if d else mac_addr,
+                })
+            # Also include DB devices not on disk
+            for mac_addr, d in db_devices.items():
+                if mac_addr not in seen:
+                    devices.append(d)
+        else:
+            devices = db_manager.get_user_allowed_devices(user)
         return render_template("downloads.html", step="devices", devices=devices)
 
 @app.route("/download/<path:filepath>")
@@ -273,7 +331,7 @@ def download_file(filepath):
     
     # Verify permission
     user = _current_sso_id()
-    if user != 'admin':
+    if user not in _SUPERUSER_IDS:
         allowed = db_manager.get_user_allowed_devices(user)
         allowed_macs = [d['mac_address'] for d in allowed]
         if target_mac not in allowed_macs:
@@ -303,19 +361,19 @@ def download_batch():
 
     # Permission Check
     user = _current_sso_id()
-    if user != 'admin':
+    if user not in _SUPERUSER_IDS:
         allowed = db_manager.get_user_allowed_devices(user)
         allowed_macs = set(d['mac_address'] for d in allowed)
-    
+
     clean_targets = []
     for rp in rel_paths:
         # Normalize
         rp = rp.replace('\\', '/')
         parts = rp.split('/')
         if not parts: continue
-        
+
         # Check MAC permission
-        if user != 'admin' and parts[0] not in allowed_macs:
+        if user not in _SUPERUSER_IDS and parts[0] not in allowed_macs:
             continue 
             
         abs_path = os.path.join('/mqtt_store', rp)
@@ -520,11 +578,11 @@ def index() -> str:
     user = _current_sso_id()
     device_map = {}
     
-    if user == 'admin':
+    if user in _SUPERUSER_IDS:
         # Admin gets full visibility
         allowed_dns = None
         # Fetch mapping for all known devices
-        all_devs = db_manager.get_user_allowed_devices('admin')
+        all_devs = db_manager.get_user_allowed_devices(user)
         device_map = {d['mac_address']: d['device_id'] for d in all_devs}
     else:
         allowed = db_manager.get_user_allowed_devices(user)
@@ -679,7 +737,7 @@ def config_devices() -> Response:
     all_devices = svc.list_devices()
     
     user = _current_sso_id()
-    if user == 'admin':
+    if user in _SUPERUSER_IDS:
         return jsonify({"items": all_devices})
     
     # Filter for non-admin
@@ -743,7 +801,7 @@ def config_results() -> Response:
         items = _merge_results()
         
         user = _current_sso_id()
-        if user != 'admin':
+        if user not in _SUPERUSER_IDS:
             allowed_db = db_manager.get_user_allowed_devices(user)
             allowed_dns = set(_normalize_dn(d['mac_address']) for d in allowed_db if d.get('mac_address'))
             
@@ -1084,6 +1142,278 @@ def api_profile_delete(name):
         abort(404)
     path.unlink()
     return jsonify({"status": "deleted"})
+
+
+# ---------------------------------------------------------------------------
+# Admin: 重新掃描文件索引（背景執行，非阻塞）
+# ---------------------------------------------------------------------------
+
+_rescan_state = {"running": False, "result": None}
+
+@app.route("/api/admin/rescan", methods=["POST"])
+@login_required
+def api_admin_rescan():
+    if _current_sso_id() != 'admin':
+        abort(403)
+    if _rescan_state["running"]:
+        return jsonify({"running": True, "message": "Rescan already in progress"}), 202
+
+    def _run():
+        _rescan_state["running"] = True
+        _rescan_state["result"] = None
+        try:
+            _rescan_state["result"] = db_manager.rebuild_file_index(str(_REPLAY_DATA_ROOT))
+        except Exception as e:
+            _rescan_state["result"] = {"inserted": 0, "error": str(e)}
+        finally:
+            _rescan_state["running"] = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"running": True, "message": "Rescan started"}), 202
+
+
+@app.route("/api/admin/rescan/status", methods=["GET"])
+@login_required
+def api_admin_rescan_status():
+    if _current_sso_id() != 'admin':
+        abort(403)
+    if _rescan_state["running"]:
+        return jsonify({"running": True})
+    result = _rescan_state["result"]
+    if result is None:
+        return jsonify({"running": False, "result": None})
+    return jsonify({"running": False, "result": result})
+
+
+# ---------------------------------------------------------------------------
+# 數據重放 (Data Replay)
+# ---------------------------------------------------------------------------
+
+# CSV 存儲根目錄（與 sink.py 保持一致）
+_REPLAY_DATA_ROOT = Path(os.getenv("DATA_ROOT", "/mqtt_store"))
+# 允許的文件名格式：HHMMSS.csv 或任意安全字符的 .csv 文件名（支持手動放置）
+_REPLAY_FILE_RE = re.compile(r'^[A-Za-z0-9_\-\.]+\.csv$')
+# 允許的日期格式：YYYYMMDD 或 YYYY-MM-DD 或任意安全目錄名（支持手動放置）
+_REPLAY_DATE_RE = re.compile(r'^[A-Za-z0-9_\-\.]+$')
+# 允許的目錄名格式：十六進位 MAC 或任意安全字母數字名稱（支持 test/ 等手動目錄）
+_REPLAY_MAC_RE = re.compile(r'^[A-Za-z0-9_\-\.]{1,64}$')
+
+
+@app.route("/replay")
+@login_required
+def replay_page():
+    return render_template("replay.html")
+
+
+@app.route("/api/replay/browse")
+@login_required
+def api_replay_browse():
+    """
+    瀏覽 mqtt_store 目錄結構。
+    ?path= 為相對路徑（空 = 根目錄）。
+    根目錄層只返回當前用戶允許的 MAC。
+    """
+    raw_path = request.args.get("path", "").strip().strip("/")
+
+    # 各路徑段白名單校驗，拒絕 .. 或含特殊字符的段
+    _SEG_RE = re.compile(r'^[A-Za-z0-9_\-\.]+$')
+    if raw_path:
+        segments = raw_path.split("/")
+        for seg in segments:
+            if not seg or not _SEG_RE.match(seg):
+                abort(400)
+    else:
+        segments = []
+
+    # 解析物理路徑，確保不越界
+    target = (_REPLAY_DATA_ROOT / raw_path).resolve() if raw_path else _REPLAY_DATA_ROOT.resolve()
+    try:
+        target.relative_to(_REPLAY_DATA_ROOT.resolve())
+    except ValueError:
+        abort(403)
+
+    if not target.exists():
+        abort(404)
+
+    user = _current_sso_id()
+    is_admin = (user in _SUPERUSER_IDS)
+
+    # 根目錄層：列出允許的 MAC 子目錄
+    if not segments:
+        allowed = db_manager.get_user_allowed_devices(user)
+        allowed_macs = {d['mac_address'] for d in allowed} if not is_admin else None
+        entries = []
+        for p in sorted(target.iterdir()):
+            if not p.is_dir():
+                continue
+            if allowed_macs is not None and p.name not in allowed_macs:
+                continue
+            entries.append({"name": p.name, "type": "dir"})
+        return jsonify({"path": "", "entries": entries})
+
+    # 其餘層：先驗證 MAC 權限（admin 可瀏覽任意目錄，包括手動放置的測試資料）
+    mac = segments[0]
+    if not is_admin and not _check_device_permission(mac):
+        abort(403)
+
+    entries = []
+    depth = len(segments)
+
+    if depth == 1:
+        # 日期目錄層（降序）
+        for p in sorted(target.iterdir(), reverse=True):
+            if p.is_dir():
+                entries.append({"name": p.name, "type": "dir"})
+    elif depth == 2:
+        # CSV 文件層（降序）
+        for p in sorted(target.iterdir(), reverse=True):
+            if p.is_file() and p.suffix.lower() == '.csv':
+                entries.append({"name": p.name, "type": "file", "size": p.stat().st_size})
+    else:
+        abort(400)
+
+    return jsonify({"path": raw_path, "entries": entries})
+
+
+@app.route("/api/replay/devices")
+@login_required
+def api_replay_devices():
+    user = _current_sso_id()
+    devices = db_manager.get_user_allowed_devices(user)
+    return jsonify(devices)
+
+
+@app.route("/api/replay/dates")
+@login_required
+def api_replay_dates():
+    mac = request.args.get("mac", "").strip()
+    if not mac or not _REPLAY_MAC_RE.match(mac):
+        abort(400)
+    if _current_sso_id() not in _SUPERUSER_IDS and not _check_device_permission(mac):
+        abort(403)
+    dates = db_manager.get_device_dates(mac)
+    # file_date 可能是 date 物件或字符串，統一轉為字符串
+    return jsonify([str(d) for d in dates])
+
+
+@app.route("/api/replay/files")
+@login_required
+def api_replay_files():
+    mac = request.args.get("mac", "").strip()
+    date = request.args.get("date", "").strip()
+    if not mac or not _REPLAY_MAC_RE.match(mac):
+        abort(400)
+    if not date or not _REPLAY_DATE_RE.match(date):
+        abort(400)
+    if _current_sso_id() not in _SUPERUSER_IDS and not _check_device_permission(mac):
+        abort(403)
+    files = db_manager.get_device_files(mac, date)
+    return jsonify(files)
+
+
+@app.route("/api/replay/data")
+@login_required
+def api_replay_data():
+    import csv as _csv
+
+    mac = request.args.get("mac", "").strip()
+    date = request.args.get("date", "").strip()
+    file = request.args.get("file", "").strip()
+
+    # 輸入校驗（防路徑注入）
+    if not mac or not _REPLAY_MAC_RE.match(mac):
+        abort(400)
+    if not date or not _REPLAY_DATE_RE.match(date):
+        abort(400)
+    if not file or not _REPLAY_FILE_RE.match(file):
+        abort(400)
+    is_admin = (_current_sso_id() in _SUPERUSER_IDS)
+    if not is_admin and not _check_device_permission(mac):
+        abort(403)
+
+    # 目錄格式為 YYYYMMDD，去除日期中的連字符（若是其他格式則原樣使用）
+    date_dir = date.replace('-', '') if re.match(r'^\d{4}-\d{2}-\d{2}$', date) else date
+    csv_path = _REPLAY_DATA_ROOT / mac / date_dir / file
+    # 解析確保不越出根目錄
+    try:
+        csv_path = csv_path.resolve()
+        _REPLAY_DATA_ROOT.resolve()
+    except Exception:
+        abort(400)
+    if not str(csv_path).startswith(str(_REPLAY_DATA_ROOT.resolve())):
+        abort(403)
+    if not csv_path.exists():
+        abort(404)
+
+    dn = mac
+    sn = 0
+    frames = []
+    try:
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            reader = _csv.reader(f)
+            header = None
+            p_start = None
+            p_end = None
+            gyro_cols = None
+            acc_cols = None
+            ts_col = 0
+            for row in reader:
+                if not row:
+                    continue
+                # 首行注釋：// DN: ..., SN: ...
+                raw = row[0].strip()
+                if raw.startswith('//'):
+                    m = re.search(r'SN:\s*(\d+)', raw)
+                    if m:
+                        sn = int(m.group(1))
+                    m2 = re.search(r'DN:\s*([0-9A-Fa-f]+)', raw)
+                    if m2:
+                        dn = m2.group(1)
+                    continue
+                # 標題行
+                if header is None:
+                    header = [c.strip() for c in row]
+                    # 找壓力列範圍（P1...Pn）
+                    p_indices = [i for i, c in enumerate(header) if re.match(r'^P\d+$', c)]
+                    if p_indices:
+                        p_start = p_indices[0]
+                        p_end = p_indices[-1] + 1
+                    # 找 Gyro 和 Acc 列
+                    try:
+                        gi = header.index('Gyro_x')
+                        gyro_cols = [gi, gi+1, gi+2]
+                    except ValueError:
+                        gyro_cols = None
+                    try:
+                        ai = header.index('Acc_x')
+                        acc_cols = [ai, ai+1, ai+2]
+                    except ValueError:
+                        acc_cols = None
+                    # 找 Timestamp 列
+                    try:
+                        ts_col = header.index('Timestamp')
+                    except ValueError:
+                        ts_col = 0  # fallback
+                    continue
+                # 數據行
+                if p_start is None:
+                    continue
+                try:
+                    ts = float(row[ts_col])
+                    pressures = [float(v) for v in row[p_start:p_end]]
+                    gyro = [float(row[i]) for i in gyro_cols] if gyro_cols else None
+                    acc  = [float(row[i]) for i in acc_cols]  if acc_cols  else None
+                    frames.append({"ts": ts, "p": pressures, "gyro": gyro, "acc": acc})
+                except (ValueError, IndexError):
+                    continue
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if sn == 0 and frames:
+        sn = len(frames[0]["p"])
+
+    return jsonify({"dn": dn, "sn": sn, "frames": frames})
 
 
 # ---------------------------------------------------------------------------
